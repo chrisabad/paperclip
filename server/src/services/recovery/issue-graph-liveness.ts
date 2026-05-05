@@ -108,6 +108,7 @@ export interface IssueGraphLivenessInput {
 
 const INVOKABLE_AGENT_STATUSES = new Set(["active", "idle", "running", "error"]);
 const BLOCKING_AGENT_STATUSES = new Set(["paused", "terminated", "pending_approval"]);
+const EXECUTIVE_ROLES = new Set(["cto", "ceo"]);
 
 function issueLabel(issue: IssueLivenessIssueInput) {
   return issue.identifier ?? issue.id;
@@ -285,21 +286,25 @@ function ownerCandidatesForRecoveryIssue(
   );
 
   const invokableAgents = orderedInvokableAgents(agents, issue.companyId);
+  // root_agent rung: only executives (cto/ceo) with no reportsTo
   for (const agent of invokableAgents) {
-    if (!agent.reportsTo) {
+    if (!agent.reportsTo && EXECUTIVE_ROLES.has(agent.role)) {
       addOwnerCandidate(candidates, seen, agentsById, issue.companyId, agent.id, "root_agent", issue.id);
     }
   }
+  // ordered_invokable_fallback rung: only executives (cto/ceo), as last resort
   for (const agent of invokableAgents) {
-    addOwnerCandidate(
-      candidates,
-      seen,
-      agentsById,
-      issue.companyId,
-      agent.id,
-      "ordered_invokable_fallback",
-      issue.id,
-    );
+    if (EXECUTIVE_ROLES.has(agent.role)) {
+      addOwnerCandidate(
+        candidates,
+        seen,
+        agentsById,
+        issue.companyId,
+        agent.id,
+        "ordered_invokable_fallback",
+        issue.id,
+      );
+    }
   }
 
   return candidates;
