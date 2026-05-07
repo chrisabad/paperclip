@@ -1447,3 +1447,51 @@ describe("issue execution policy transitions", () => {
     });
   });
 });
+
+describe("ensureExecutionPolicyForPRBearingIssue", () => {
+  it("adds both review and approval stages when policy is null", () => {
+    const result = ensureExecutionPolicyForPRBearingIssue(null);
+    expect(result.stages).toHaveLength(2);
+    expect(result.stages.find((s) => s.type === "review")).toBeDefined();
+    expect(result.stages.find((s) => s.type === "approval")).toBeDefined();
+  });
+
+  it("adds approval stage when only review stage exists", () => {
+    const policy = reviewOnlyPolicy();
+    const result = ensureExecutionPolicyForPRBearingIssue(policy);
+    expect(result.stages).toHaveLength(2);
+    expect(result.stages.find((s) => s.type === "review")).toBeDefined();
+    expect(result.stages.find((s) => s.type === "approval")).toBeDefined();
+    // Preserves existing review stage
+    expect(result.stages[0].type).toBe("review");
+    expect(result.stages[0].participants).toEqual(policy.stages[0].participants);
+  });
+
+  it("adds review stage when only approval stage exists", () => {
+    const policy = approvalOnlyPolicy();
+    const result = ensureExecutionPolicyForPRBearingIssue(policy);
+    expect(result.stages).toHaveLength(2);
+    expect(result.stages.find((s) => s.type === "review")).toBeDefined();
+    expect(result.stages.find((s) => s.type === "approval")).toBeDefined();
+  });
+
+  it("returns existing policy unchanged when both stages already exist", () => {
+    const policy = twoStagePolicy();
+    const result = ensureExecutionPolicyForPRBearingIssue(policy);
+    expect(result).toBe(policy);
+  });
+
+  it("preserves monitor configuration from existing policy", () => {
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [{ type: "review", participants: [{ type: "agent", agentId: qaAgentId }] }],
+      monitor: {
+        nextCheckAt: new Date(Date.now() + 60000).toISOString(),
+        scheduledBy: "assignee",
+      },
+    })!;
+    const result = ensureExecutionPolicyForPRBearingIssue(policy);
+    expect(result.monitor).toBeDefined();
+    expect(result.stages).toHaveLength(2);
+  });
+});
+import { ensureExecutionPolicyForPRBearingIssue } from "../services/issue-execution-policy.ts";

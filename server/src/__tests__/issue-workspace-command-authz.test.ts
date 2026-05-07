@@ -119,7 +119,7 @@ function registerRouteMocks() {
     logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => mockRoutineService,
-    workProductService: () => ({}),
+    workProductService: () => ({ listForIssue: async () => [] }),
   }));
 }
 
