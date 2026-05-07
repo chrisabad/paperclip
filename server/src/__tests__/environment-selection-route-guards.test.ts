@@ -82,7 +82,7 @@ vi.mock("../services/index.js", () => ({
   }),
   documentService: () => ({}),
   routineService: () => ({}),
-  workProductService: () => ({}),
+  workProductService: () => ({ listForIssue: async () => [] }),
 }));
 
 vi.mock("../services/environments.js", () => ({

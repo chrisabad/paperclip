@@ -95,6 +95,7 @@ import {
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
+  ensureExecutionPolicyForPRBearingIssue,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -1957,6 +1958,14 @@ export function issueRoutes(
       res.status(422).json({ error: "Invalid work product payload" });
       return;
     }
+    // Auto-ensure execution policy includes review + approval stages when a PR work product is created
+    if (product.type === "pull_request") {
+      const currentPolicy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+      const requiredPolicy = ensureExecutionPolicyForPRBearingIssue(currentPolicy);
+      if (JSON.stringify(currentPolicy) !== JSON.stringify(requiredPolicy)) {
+        await svc.update(issue.id, { executionPolicy: requiredPolicy as any });
+      }
+    }
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: issue.companyId,
@@ -2645,6 +2654,31 @@ export function issueRoutes(
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
         await assertCanAssignTasks(req, existing.companyId);
+      }
+    }
+
+    // PR-done guard: prevent marking issue as done when linked PRs are unmerged or have failing CI
+    const becameDone = existing.status !== "done" && updateFields.status === "done";
+    if (becameDone) {
+      const workProducts = await workProductsSvc.listForIssue(existing.id);
+      const pullRequestProducts = workProducts.filter((wp) => wp.type === "pull_request");
+      const unmergedPR = pullRequestProducts.find((wp) => wp.status !== "merged");
+      if (unmergedPR) {
+        res.status(422).json({
+          error: "Cannot mark issue as done: linked pull request is not merged",
+          workProductId: unmergedPR.id,
+          workProductStatus: unmergedPR.status,
+        });
+        return;
+      }
+      const failingCIPR = pullRequestProducts.find((wp) => wp.healthStatus === "unhealthy");
+      if (failingCIPR) {
+        res.status(422).json({
+          error: "Cannot mark issue as done: linked pull request has failing CI checks",
+          workProductId: failingCIPR.id,
+          workProductHealthStatus: failingCIPR.healthStatus,
+        });
+        return;
       }
     }
 

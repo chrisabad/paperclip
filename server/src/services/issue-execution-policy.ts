@@ -1048,3 +1048,31 @@ export function applyIssueExecutionPolicyTransition(input: TransitionInput): Tra
   Object.assign(stageResult.patch, monitorPatch);
   return stageResult;
 }
+export function ensureExecutionPolicyForPRBearingIssue(policy: IssueExecutionPolicy | null): IssueExecutionPolicy {
+  const hasReviewStage = policy?.stages.some((s) => s.type === "review") ?? false;
+  const hasApprovalStage = policy?.stages.some((s) => s.type === "approval") ?? false;
+  if (hasReviewStage && hasApprovalStage) return policy!;
+  const stages: IssueExecutionStage[] = policy?.stages ? [...policy.stages] : [];
+  if (!hasReviewStage) {
+    stages.push({
+      id: randomUUID(),
+      type: "review",
+      approvalsNeeded: 1,
+      participants: [],
+    });
+  }
+  if (!hasApprovalStage) {
+    stages.push({
+      id: randomUUID(),
+      type: "approval",
+      approvalsNeeded: 1,
+      participants: [],
+    });
+  }
+  return {
+    mode: policy?.mode ?? "normal",
+    commentRequired: policy?.commentRequired ?? true,
+    stages,
+    ...(policy?.monitor ? { monitor: policy.monitor } : {}),
+  };
+}

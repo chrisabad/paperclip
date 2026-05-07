@@ -98,7 +98,7 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => mockRoutineService,
-    workProductService: () => ({}),
+    workProductService: () => ({ listForIssue: async () => [] }),
   }));
 
   vi.doMock("../services/environments.js", () => ({
