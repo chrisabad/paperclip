@@ -2933,4 +2933,90 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  // AGE-13434: Agent-busy guard — when an agent is actively running a different issue,
+  // its other assigned todo issues should NOT be escalated to blocked.
+  it("skips assigned todo work when the agent has an active run on a different issue (AGE-13434)", async () => {
+    // Seed a todo issue assigned to the agent, with NO prior run for this issue.
+    // This is the "stranded" issue that would normally be escalated.
+    const { companyId, agentId, issueId } = await seedAssignedTodoNoRunFixture();
+
+    // Simulate the agent being busy on a DIFFERENT issue by inserting an active heartbeat run.
+    const otherIssueId = randomUUID();
+    const otherRunId = randomUUID();
+    const otherWakeupId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    // Insert in the correct order: wakeupRequest → heartbeatRun → issue
+    // (due to foreign key constraints)
+    await db.insert(agentWakeupRequests).values({
+      id: otherWakeupId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: otherIssueId },
+      status: "queued",
+      runId: otherRunId,
+    });
+
+    // Insert an active (running) heartbeat run for the OTHER issue
+    await db.insert(heartbeatRuns).values({
+      id: otherRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      wakeupRequestId: otherWakeupId,
+      contextSnapshot: {
+        issueId: otherIssueId,
+        taskId: otherIssueId,
+        wakeReason: "issue_assigned",
+      },
+      startedAt: new Date(),
+    });
+
+    // Insert a second issue that the agent is actively working on
+    await db.insert(issues).values({
+      id: otherIssueId,
+      companyId,
+      title: "Other issue the agent is actively working on",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      assigneeUserId: null,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      checkoutRunId: otherRunId,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // The todo issue should be SKIPPED — not escalated to blocked.
+    // The agent is busy on another issue and will get to this one next.
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    expect(result.escalated).toBe(0);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.assignmentDispatched).toBe(0);
+
+    // The todo issue should remain todo, not blocked
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+
+    // No recovery issue should have been created for this issue
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "stranded_issue_recovery"),
+          eq(issues.originId, issueId),
+        ),
+      );
+    expect(recoveryIssues).toHaveLength(0);
+  });
 });

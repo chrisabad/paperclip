@@ -458,6 +458,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Boolean(run || deferredWake);
   }
 
+  /**
+   * Check whether the assigned agent has ANY active heartbeat run (regardless of
+   * which issue it targets). When an agent is actively working on issue B, it should
+   * not be considered "stranded" on its other assigned issue A — the agent is simply
+   * busy and will get to A after completing B.
+   *
+   * This prevents the dispatcher from spuriously escalating a `todo` issue to
+   * `blocked` just because the agent happens to be running a different issue right now.
+   */
+  async function hasAssigneeWithActiveRun(companyId: string, assigneeAgentId: string) {
+    const row = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, assigneeAgentId),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(row);
+  }
+
   async function hasQueuedIssueWake(companyId: string, issueId: string) {
     return db
       .select({ id: agentWakeupRequests.id })
@@ -1518,13 +1543,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
           sourceAssignee,
         }),
-        status: "todo",
         priority: input.issue.priority,
-        parentId: input.issue.id,
         projectId: input.issue.projectId,
         goalId: input.issue.goalId,
         assigneeAgentId: ownerAgentId,
         assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(),
+        blockedByIssueIds: [input.issue.id],
         originKind: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
         originId: input.issue.id,
         originRunId: input.latestRun?.id ?? null,
@@ -2011,6 +2035,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await hasActiveExecutionPath(issue.companyId, issue.id)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // AGE-13434: If the assigned agent is currently busy running a different issue,
+      // this issue is not truly stranded — the agent will pick it up next.
+      // Without this guard, the dispatcher spuriously escalates todo issues to blocked
+      // when the agent is actively working on another assigned issue.
+      if (await hasAssigneeWithActiveRun(issue.companyId, agentId)) {
         result.skipped += 1;
         continue;
       }
