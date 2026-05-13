@@ -11,6 +11,7 @@ import {
   issueRelations,
   issues as issueRows,
   projectWorkspaces,
+  projects,
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -106,6 +107,10 @@ import {
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
+  stageHasParticipant,
+  isLocalBoardActor,
+  actorPrincipal,
+  nextPendingStage,
 } from "../services/issue-execution-policy.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -1473,6 +1478,7 @@ export function issueRoutes(
 
     const result = await svc.list(companyId, {
       status: req.query.status as string | undefined,
+      identifier: req.query.identifier as string | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: req.query.participantAgentId as string | undefined,
       assigneeUserId,
@@ -2517,10 +2523,21 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
-    const executionPolicy = applyActorMonitorScheduledBy(
+    let executionPolicy = applyActorMonitorScheduledBy(
       normalizeIssueExecutionPolicy(req.body.executionPolicy),
       actor.actorType,
     );
+    // Fallback to project default execution policy when none is provided
+    if (!executionPolicy && req.body.projectId) {
+      const project = await db
+        .select({ defaultExecutionPolicy: projects.defaultExecutionPolicy })
+        .from(projects)
+        .where(and(eq(projects.id, req.body.projectId), eq(projects.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (project?.defaultExecutionPolicy) {
+        executionPolicy = normalizeIssueExecutionPolicy(project.defaultExecutionPolicy);
+      }
+    }
     assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
     const issue = await svc.create(companyId, {
       ...req.body,
@@ -2880,6 +2897,93 @@ export function issueRoutes(
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
     assertCanManageIssueMonitor(req, existing.assigneeAgentId, req.body.executionPolicy !== undefined && monitorChanged);
 
+    // Derive the real actorType from req.actor.type so local-board is
+    // correctly identified as "board" rather than the "user" label that
+    // getActorInfo applies to all non-agent actors.  This is critical for
+    // the execution policy gate (AGE-12949): getActorInfo maps both
+    // regular users and board users to actorType "user", but the policy
+    // transition logic must treat "local-board" as a separate identity
+    // that cannot participate in review/approval stages.
+    const effectiveActorType: "agent" | "user" | "board" | null =
+      req.actor.type === "board" ? "board"
+      : actor.actorType === "agent" ? "agent"
+      : "user";
+    const effectiveUserId: string | null =
+      req.actor.type === "board" ? (req.actor.userId ?? "local-board") : (actor.actorType === "user" ? actor.actorId : null);
+
+    // Gate: local-board must NOT change status on policy-gated issues.
+    // Per AGE-12949, local-board is a shared bootstrap identity distributed
+    // via PAPERCLIP_BOARD_KEY; any agent can authenticate as it and bypass
+    // the review/approval gate. Reject with 403 unless the change is
+    // setting/updating the policy itself (which is an admin action).
+    if (
+      effectiveActorType === "board" &&
+      effectiveUserId === "local-board" &&
+      nextExecutionPolicy &&
+      typeof updateFields.status === "string" &&
+      updateFields.status !== existing.status
+    ) {
+      logger.warn(
+        { issueId: existing.id, issueIdentifier: existing.identifier, requestedStatus: updateFields.status, currentStatus: existing.status },
+        "local-board attempted status change on policy-gated issue — rejecting (AGE-12949)",
+      );
+      res.status(403).json({
+        error: "local-board identity cannot change issue status when an execution policy is active. Use agent identity instead.",
+        code: "LOCAL_BOARD_POLICY_GATE",
+      });
+      return;
+    }
+
+    // Gate: local-board must NOT directly set executionState on policy-gated issues.
+    // Per AGE-12949 acceptance criteria, executionState is derived from the policy
+    // state machine — direct mutation would bypass review/approval gates.
+    // The schema already excludes executionState from PATCH, but this is a
+    // defense-in-depth check in case it's ever added.
+    if (
+      effectiveActorType === "board" &&
+      effectiveUserId === "local-board" &&
+      nextExecutionPolicy &&
+      req.body.executionState !== undefined
+    ) {
+      logger.warn(
+        { issueId: existing.id, issueIdentifier: existing.identifier },
+        "local-board attempted direct executionState mutation on policy-gated issue — rejecting (AGE-12949)",
+      );
+      res.status(403).json({
+        error: "local-board identity cannot directly set executionState when an execution policy is active.",
+        code: "LOCAL_BOARD_EXECUTION_STATE_GATE",
+      });
+      return;
+    }
+
+    // AGE-13900: Stage participant validation — only stage participants may
+    // advance an issue through execution policy stages. Board/admin users bypass
+    // this check because they are operators, not workflow participants.
+    // Only enforced when the PATCH actually changes the issue status; comment-only
+    // PATCHes or metadata updates must not be blocked by this gate.
+    if (nextExecutionPolicy && effectiveActorType !== "board" && typeof updateFields.status === "string" && updateFields.status !== existing.status) {
+      const currentExecutionState = parseIssueExecutionState(existing.executionState);
+      const pendingStage = nextPendingStage(nextExecutionPolicy, currentExecutionState);
+      if (pendingStage) {
+        const principal = actorPrincipal({
+          agentId: actor.agentId ?? null,
+          userId: effectiveUserId,
+          actorType: effectiveActorType,
+        });
+        if (!stageHasParticipant(pendingStage, principal)) {
+          logger.warn(
+            { issueId: existing.id, issueIdentifier: existing.identifier, principal, pendingStageId: pendingStage.id },
+            "non-participant agent attempted to advance issue stage — rejecting (AGE-13900)",
+          );
+          res.status(403).json({
+            error: `Only stage participants may advance this issue. Current stage "${pendingStage.type}" (id: ${pendingStage.id}) requires one of its designated participants to approve.`,
+            code: "STAGE_PARTICIPANT_REQUIRED",
+          });
+          return;
+        }
+      }
+    }
+
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
       policy: nextExecutionPolicy,
@@ -2892,7 +2996,8 @@ export function issueRoutes(
       },
       actor: {
         agentId: actor.agentId ?? null,
-        userId: actor.actorType === "user" ? actor.actorId : null,
+        userId: effectiveUserId,
+        actorType: effectiveActorType,
       },
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
@@ -2910,6 +3015,90 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+
+    // Attribution audit (AGE-12949): log every local-board mutation on a
+    // policy-gated issue that was NOT rejected by the 403 gate above
+    // (e.g. setting executionPolicy, commenting, etc.).
+    if (effectiveActorType === "board" && effectiveUserId === "local-board" && nextExecutionPolicy) {
+      logger.info(
+        {
+          issueId: existing.id,
+          issueIdentifier: existing.identifier,
+          patchFields: Object.keys(updateFields),
+          hasPolicy: true,
+        },
+        "local-board PATCH on policy-gated issue passed gate (AGE-12949 audit)",
+      );
+    }
+
+    // AGE-13514: Enforce stage completion on multi-stage execution policies.
+    // When a non-final-stage participant requests "done", the transition function
+    // should redirect to "in_review" with the next stage assigned. If the request
+    // is becoming done but the transition didn't record a stage completion (decision),
+    // and a multi-stage policy exists, reject as a potential enforcement gap.
+    const becomingDone = updateFields.status === "done" && existing.status !== "done";
+    if (
+      becomingDone &&
+      nextExecutionPolicy &&
+      nextExecutionPolicy.stages.length > 1 &&
+      !transition.decision
+    ) {
+      logger.error(
+        {
+          issueId: existing.id,
+          issueIdentifier: existing.identifier,
+          stagesCount: nextExecutionPolicy.stages.length,
+          patchStatus: transition.patch.status,
+          actorId: actor.agentId,
+        },
+        "AGE-13514: enforcement gap detected — done requested without final approval on multi-stage policy",
+      );
+      res.status(422).json({
+        error: "Cannot mark issue as done: not all approval stages have been completed",
+        code: "EXECUTION_POLICY_STAGE_INCOMPLETE",
+        stagesRequired: nextExecutionPolicy.stages.length,
+      });
+      return;
+    }
+
+    // AGE-13028: PR-bearing done guard — block done transition when linked
+    // pull_request work products are not merged/closed or have failing CI.
+    // Opt-out: issues with executionPolicy null bypass the guard (backwards compat).
+    if (becomingDone && nextExecutionPolicy) {
+      const workProducts = await workProductsSvc.listForIssue(existing.id);
+      const pullRequests = workProducts.filter((wp) => wp.type === "pull_request");
+      if (pullRequests.length > 0) {
+        const blockingWps: { id: string; title: string; reason: string }[] = [];
+        for (const pr of pullRequests) {
+          if (pr.status !== "merged" && pr.status !== "closed") {
+            blockingWps.push({
+              id: pr.id,
+              title: pr.title || pr.externalId || pr.id,
+              reason: `pull request status is "${pr.status}", expected "merged" or "closed"`,
+            });
+          } else if (pr.healthStatus === "unhealthy") {
+            blockingWps.push({
+              id: pr.id,
+              title: pr.title || pr.externalId || pr.id,
+              reason: "pull request has failing CI checks (healthStatus: unhealthy)",
+            });
+          }
+        }
+        if (blockingWps.length > 0) {
+          logger.warn(
+            { issueId: existing.id, issueIdentifier: existing.identifier, blockingWps },
+            "PR-done guard: blocking done transition due to unmerged/failing pull requests (AGE-13028)",
+          );
+          res.status(422).json({
+            error: "Cannot mark issue as done: linked pull request(s) are not merged or have failing CI checks",
+            code: "PR_DONE_GUARD_BLOCKED",
+            blockingWorkProducts: blockingWps,
+          });
+          return;
+        }
+      }
+    }
+
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {

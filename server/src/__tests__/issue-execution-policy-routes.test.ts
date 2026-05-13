@@ -5,6 +5,7 @@ import { normalizeIssueExecutionPolicy } from "../services/issue-execution-polic
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  getByIdentifier: vi.fn(async () => null),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   createChild: vi.fn(),
@@ -130,6 +131,10 @@ async function createApp(actor?: TestActor) {
     next();
   });
   app.use("/api", issueRoutes({} as any, {} as any));
+  app.use((err: any, _req: any, _res: any, next: any) => {
+    console.log('CAUGHT ERROR:', err?.message, err?.stack?.slice(0, 500));
+    next(err);
+  });
   app.use(errorHandler);
   return app;
 }
@@ -591,5 +596,353 @@ describe("issue execution policy routes", () => {
         details: expect.not.objectContaining({ externalRef: expect.anything() }),
       }),
     );
+  // --- AGE-12949: local-board bypass gate on policy-gated issues ---
+  describe("local-board bypass gate (AGE-12949)", () => {
+    const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "44444444-4444-4444-8444-444444444444",
+          type: "review",
+          participants: [{ type: "agent", agentId: reviewerAgentId }],
+        },
+      ],
+    })!;
+
+    /** Issue with an active execution policy, assignable to the reviewer. */
+    function makePolicyGatedIssue(overrides: Record<string, unknown> = {}) {
+      return {
+        id: "issue-1",
+        companyId: "company-1",
+        status: "in_progress",
+        assigneeAgentId: "agent-coder-1",
+        assigneeUserId: null,
+        createdByUserId: "local-board",
+        identifier: "AGE-TEST",
+        title: "Test policy-gated issue",
+        executionPolicy: policy,
+        executionState: null,
+        ...overrides,
+      };
+    }
+
+    it("rejects local-board status=done PATCH on policy-gated issue with 403", async () => {
+      const issue = makePolicyGatedIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/issue-1")
+        .send({ status: "done" });
+
+      if (res.status !== 403) {
+        console.log("DEBUG response body:", JSON.stringify(res.body));
+        console.log("DEBUG response status:", res.status);
+      }
+
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe("LOCAL_BOARD_POLICY_GATE");
+      expect(res.body.error).toMatch(/local-board/);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects local-board status=cancelled PATCH on policy-gated issue with 403", async () => {
+      const issue = makePolicyGatedIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+
+      const res = await request(await createApp())
+        .patch("/api/issues/issue-1")
+        .send({ status: "cancelled" });
+
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe("LOCAL_BOARD_POLICY_GATE");
+    });
+
+    it("strips executionState from PATCH body (schema enforcement), preventing local-board mutation", async () => {
+      // executionState is NOT in the Zod updateIssueSchema, so it is stripped
+      // before reaching the handler. This means the 403 defense-in-depth gate
+      // in the PATCH handler is unreachable for this field — the schema is
+      // the primary defense. The unit test in issue-execution-policy.test.ts
+      // covers the transition logic. This test verifies the schema strips it.
+      const issue = makePolicyGatedIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/issue-1")
+        .send({
+          executionState: {
+            status: "completed",
+            currentStageId: null,
+            currentStageIndex: null,
+            currentStageType: null,
+            currentParticipant: null,
+            returnAssignee: null,
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: "approved",
+          },
+        });
+
+      // Schema strips executionState; PATCH is a no-op but succeeds (200).
+      // The issue's executionState remains unchanged from the mock.
+      expect(res.status).toBe(200);
+      // Verify the update call did NOT receive executionState
+      if (mockIssueService.update.mock.calls.length > 0) {
+        const updateCall = mockIssueService.update.mock.calls[0];
+        expect(updateCall[1]).not.toHaveProperty("executionState");
+      }
+    });
+
+    it("allows local-board to set executionPolicy on policy-gated issue (admin action)", async () => {
+      // Setting the policy itself is an admin action and should NOT be blocked.
+      const issue = makePolicyGatedIssue({ executionPolicy: null });
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/issue-1")
+        .send({ executionPolicy: policy });
+
+      // Should succeed (200) — setting policy is allowed even for local-board
+      expect(res.status).toBe(200);
+    });
+
+    it("allows local-board comment on policy-gated issue without status change", async () => {
+      // Comments don't change status, so they should pass through.
+      const issue = makePolicyGatedIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.addComment.mockResolvedValue({
+        id: "comment-1",
+        body: "comment from local-board",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/issue-1")
+        .send({ comment: "comment from local-board" });
+
+      // Comments are allowed; status is not changed
+      expect(res.status).toBe(200);
+    });
+
+    it("allows local-board status change on issue WITHOUT execution policy", async () => {
+      // No execution policy — local-board should NOT be gated.
+      const noPolicyIssue = makePolicyGatedIssue({ executionPolicy: null, executionState: null });
+      mockIssueService.getById.mockResolvedValue(noPolicyIssue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...noPolicyIssue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/issue-1")
+        .send({ status: "done" });
+
+      // Without a policy, local-board can change status freely
+      expect(res.status).toBe(200);
+    });
+
+    it("allows local-board same-status PATCH on policy-gated issue (no-op status)", async () => {
+      // PATCHing with the same status the issue already has should not be
+      // rejected — the gate checks for status CHANGE specifically.
+      const issue = makePolicyGatedIssue({ status: "in_progress" });
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp())
+        .patch("/api/issues/issue-1")
+        .send({ status: "in_progress" });
+
+      // Same status — not a change, should pass
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // --- AGE-13900: Stage participant validation on execution policy stages ---
+  describe("stage participant validation (AGE-13900)", () => {
+    const participantAgentId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const nonParticipantAgentId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const twoStagePolicy = normalizeIssueExecutionPolicy({
+      stages: [
+        {
+          id: "44444444-4444-4444-8444-444444444441",
+          type: "review",
+          participants: [{ type: "agent", agentId: participantAgentId }],
+        },
+        {
+          id: "44444444-4444-4444-8444-444444444442",
+          type: "approval",
+          participants: [{ type: "agent", agentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" }],
+        },
+      ],
+    })!;
+
+    /** Agent actor making the PATCH request */
+    const agentActor = {
+      type: "agent",
+      agentId: nonParticipantAgentId,
+      companyId: "company-1",
+      companyIds: ["company-1"],
+      source: "local_implicit" as const,
+      isInstanceAdmin: false,
+      runId: "run-non-participant",
+    };
+
+    /** Agent actor who IS a participant in the first stage */
+    const participantActor = {
+      type: "agent",
+      agentId: participantAgentId,
+      companyId: "company-1",
+      companyIds: ["company-1"],
+      source: "local_implicit" as const,
+      isInstanceAdmin: false,
+      runId: "run-participant",
+    };
+
+    /** Board actor (bypasses stage participant check) */
+    const boardActor = {
+      type: "board",
+      userId: "local-board",
+      companyIds: ["company-1"],
+      source: "local_implicit" as const,
+      isInstanceAdmin: false,
+    };
+
+    function makePolicyGatedIssue(overrides: Record<string, unknown> = {}) {
+      return {
+        id: "issue-age13900",
+        companyId: "company-1",
+        status: "in_progress",
+        assigneeAgentId: nonParticipantAgentId,
+        assigneeUserId: null,
+        createdByUserId: "local-board",
+        identifier: "AGE-13900",
+        title: "Test stage participant validation",
+        executionPolicy: twoStagePolicy,
+        executionState: null,
+        ...overrides,
+      };
+    }
+
+    it("rejects non-participant agent advancing status with 403 STAGE_PARTICIPANT_REQUIRED", async () => {
+      const issue = makePolicyGatedIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp(agentActor))
+        .patch("/api/issues/issue-age13900")
+        .send({ status: "in_review" });
+
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe("STAGE_PARTICIPANT_REQUIRED");
+      expect(res.body.error).toMatch(/stage participant/i);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("allows participant agent to advance status through the stage", async () => {
+      // Unassigned issue — any agent can mutate; stage participant check still applies
+      const issue = makePolicyGatedIssue({ assigneeAgentId: null });
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp(participantActor))
+        .patch("/api/issues/issue-age13900")
+        .send({ status: "in_review" });
+
+      // Participant should be allowed through — status transitions to in_review
+      expect(res.status).toBe(200);
+    });
+
+    it("allows board user to bypass stage participant check", async () => {
+      const issue = makePolicyGatedIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      // Board can PATCH even though local-board is NOT a stage participant
+      const res = await request(await createApp(boardActor))
+        .patch("/api/issues/issue-age13900")
+        .send({ executionPolicy: twoStagePolicy });
+
+      // Board can set policy (admin action) — this hits the admin gate path,
+      // not the status-advance path. The stage participant guard shouldn't block it.
+      expect(res.status).toBe(200);
+    });
+
+    it("allows non-participant PATCH on issue without execution policy", async () => {
+      const noPolicyIssue = makePolicyGatedIssue({ executionPolicy: null, executionState: null });
+      mockIssueService.getById.mockResolvedValue(noPolicyIssue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...noPolicyIssue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      const res = await request(await createApp(agentActor))
+        .patch("/api/issues/issue-age13900")
+        .send({ status: "done" });
+
+      // No policy — no stage participant check applies
+      expect(res.status).toBe(200);
+    });
+
+    it("allows non-participant PATCH that does not change status (comment-only)", async () => {
+      const issue = makePolicyGatedIssue();
+      mockIssueService.getById.mockResolvedValue(issue);
+      mockIssueService.addComment.mockResolvedValue({
+        id: "comment-1",
+        body: "just a comment",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }));
+
+      // Comments without status change don't trigger the stage participant gate
+      const res = await request(await createApp(agentActor))
+        .patch("/api/issues/issue-age13900")
+        .send({ comment: "just a comment from non-participant" });
+
+      expect(res.status).toBe(200);
+    });
   });
 });
+

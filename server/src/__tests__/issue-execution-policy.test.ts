@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, isLocalBoardActor, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -1444,6 +1444,136 @@ describe("issue execution policy transitions", () => {
           monitorExplicitlyUpdated: true,
         }),
       ).toThrow("Monitor bounds are already exhausted");
+
+    });
+  describe("local-board bypass gate (AGE-12949)", () => {
+    const policy = reviewOnlyPolicy();
+
+    it("isLocalBoardActor detects local-board via actorType='board'", () => {
+      expect(isLocalBoardActor({ actorType: "board", userId: "local-board", agentId: null })).toBe(true);
+    });
+
+    it("isLocalBoardActor detects local-board via userId fallback (no actorType)", () => {
+      expect(isLocalBoardActor({ userId: "local-board", agentId: null })).toBe(true);
+      expect(isLocalBoardActor({ userId: "local-board" })).toBe(true);
+    });
+
+    it("isLocalBoardActor returns false for non-board actors", () => {
+      expect(isLocalBoardActor({ actorType: "agent", agentId: coderAgentId })).toBe(false);
+      expect(isLocalBoardActor({ actorType: "user", userId: ctoUserId })).toBe(false);
+      expect(isLocalBoardActor({ actorType: "board", userId: "some-other-board-user", agentId: null })).toBe(false);
+    });
+
+    it("isLocalBoardActor returns false when agentId is set", () => {
+      // agentId present means this is an agent, not local-board
+      expect(isLocalBoardActor({ userId: "local-board", agentId: "some-agent-id" })).toBe(false);
+    });
+
+    it("local-board actor gets null principal — cannot match stage participants", () => {
+      // When local-board tries to set status=done on a policy-gated issue,
+      // actorPrincipal returns null, so it cannot match any stage participant.
+      // This means local-board can never approve or advance a workflow stage.
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { actorType: "board", userId: "local-board", agentId: null },
+      });
+
+      // Local-board should NOT be able to close the issue — it should be
+      // routed into the review stage instead.
+      expect(result.patch.status).toBe("in_review");
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: qaAgentId },
+      });
+    });
+
+    it("local-board with userId fallback also routes to review stage", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { userId: "local-board" },
+      });
+
+      // Same result — local-board cannot bypass the review gate.
+      expect(result.patch.status).toBe("in_review");
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageType: "review",
+      });
+    });
+
+    it("regular board user also gets null principal — cannot advance stages", () => {
+      // Any board user (not just local-board) should not participate in
+      // review/approval stages.
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: null,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { actorType: "board", userId: "other-board-user", agentId: null },
+      });
+
+      // Board user should also be routed to review stage.
+      expect(result.patch.status).toBe("in_review");
+    });
+
+    it("local-board cannot approve a pending review stage (defense-in-depth 422)", () => {
+      // Even if the 403 gate in the PATCH handler were somehow bypassed, the
+      // transition function itself rejects local-board: its null principal
+      // cannot match any stage participant, so it cannot advance stages.
+      // The 422 "Only the active reviewer or approver can advance" error is
+      // defense-in-depth — the real defense is the 403 gate in the PATCH handler.
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: policy.stages[0].id,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { actorType: "board", userId: "local-board", agentId: null },
+          commentBody: "local-board attempting to approve",
+        }),
+      ).toThrow("Only the active reviewer or approver can advance the current execution stage");
+
     });
   });
 });

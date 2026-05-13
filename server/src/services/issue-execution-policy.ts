@@ -33,6 +33,7 @@ type IssueLike = AssigneeLike & {
 type ActorLike = {
   agentId?: string | null;
   userId?: string | null;
+  actorType?: "agent" | "user" | "board" | null;
 };
 
 type RequestedAssigneePatch = {
@@ -414,10 +415,47 @@ export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrinc
   return null;
 }
 
-function actorPrincipal(actor: ActorLike): IssueExecutionStagePrincipal | null {
+export function actorPrincipal(actor: ActorLike): IssueExecutionStagePrincipal | null {
+  // Reject local-board from execution policy transitions — board has effective
+  // admin and silently overrides the gate. Returning null means local-board is
+  // treated as having no principal, so it cannot match any stage participant
+  // and cannot approve/advance workflow stages.
+  if (isLocalBoardActor(actor)) {
+    return null;
+  }
+  if (actor.actorType === "board") {
+    // Other board users are also not stage participants — they should not
+    // participate in review/approval stages. Board is an admin override
+    // identity, not a workflow participant.
+    return null;
+  }
   if (actor.agentId) return { type: "agent", agentId: actor.agentId, userId: null };
   if (actor.userId) return { type: "user", userId: actor.userId, agentId: null };
   return null;
+}
+
+/**
+ * Returns true if the actor is the local-board bootstrap identity.
+ * Local-board is the automatic admin user created in local_trusted deployment
+ * mode and distributed to all agent environments via PAPERCLIP_BOARD_KEY.
+ * It should NEVER participate in execution policy transitions because:
+ * 1. It bypasses the review/approval gate (AGE-12949)
+ * 2. Activity is attributed to "Chris Abad" rather than the real agent
+ * 3. Any agent with PAPERCLIP_BOARD_KEY can authenticate as local-board
+ */
+export function isLocalBoardActor(actor: ActorLike): boolean {
+  // Detect local-board by actorType="board" (set from req.actor.type) or
+  // by userId="local-board" (fallback for callers that only set userId).
+  // The PATCH handler passes actorType from req.actor.type which is "board"
+  // for local-board, but older callers may only set userId.
+  if (actor.actorType === "board" && actor.userId === "local-board") {
+    return true;
+  }
+  // Fallback: userId "local-board" without actorType (legacy callers)
+  if (!actor.actorType && actor.userId === "local-board" && !actor.agentId) {
+    return true;
+  }
+  return false;
 }
 
 function principalsEqual(a: IssueExecutionStagePrincipal | null, b: IssueExecutionStagePrincipal | null): boolean {
@@ -431,7 +469,7 @@ function findStageById(policy: IssueExecutionPolicy, stageId: string | null | un
   return policy.stages.find((stage) => stage.id === stageId) ?? null;
 }
 
-function nextPendingStage(policy: IssueExecutionPolicy, state: IssueExecutionState | null) {
+export function nextPendingStage(policy: IssueExecutionPolicy, state: IssueExecutionState | null) {
   const completed = new Set(state?.completedStageIds ?? []);
   return policy.stages.find((stage) => !completed.has(stage.id)) ?? null;
 }
@@ -453,7 +491,7 @@ function selectStageParticipant(
   return first ? { type: first.type, agentId: first.agentId ?? null, userId: first.userId ?? null } : null;
 }
 
-function stageHasParticipant(stage: IssueExecutionStage, participant: IssueExecutionStagePrincipal | null): boolean {
+export function stageHasParticipant(stage: IssueExecutionStage, participant: IssueExecutionStagePrincipal | null): boolean {
   if (!participant) return false;
   return stage.participants.some((candidate) => principalsEqual(candidate, participant));
 }
