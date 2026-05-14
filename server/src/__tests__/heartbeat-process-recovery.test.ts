@@ -3019,4 +3019,122 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
     expect(recoveryIssues).toHaveLength(0);
   });
+
+  // ─── hasExceededMaxRecoveryAttempts guard tests ──────────────────────────
+
+  it("escalates assigned todo work to blocked when max recovery attempts are exceeded (assignment_recovery)", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+      runErrorCode: "process_lost",
+    });
+
+    // Pre-seed a recovery action with attemptCount = 3 (at the limit)
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `stranded_assigned_issue:${companyId}:${issueId}`,
+      evidence: { sourceIssueId: issueId, previousStatus: "todo", latestRunId: runId, retryReason: "assignment_recovery" },
+      nextAction: "Restore a live execution path for the assigned issue",
+      attemptCount: 3,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.issueIds).toContain(issueId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.length).toBeGreaterThanOrEqual(1);
+    const escalationComment = comments.find((c) => c.body.includes("maximum recovery attempts"));
+    expect(escalationComment).toBeDefined();
+    expect(escalationComment?.body).toContain("3");
+  });
+
+  it("escalates in-progress stranded work to blocked when max recovery attempts are exceeded (continuation recovery)", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "process_lost",
+    });
+
+    // Pre-seed a recovery action with attemptCount = 3 (at the limit)
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `stranded_assigned_issue:${companyId}:${issueId}`,
+      evidence: { sourceIssueId: issueId, previousStatus: "in_progress", latestRunId: runId, retryReason: "issue_continuation_needed" },
+      nextAction: "Restore a live execution path for the assigned issue",
+      attemptCount: 3,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(1);
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.issueIds).toContain(issueId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    const escalationComment = comments.find((c) => c.body.includes("maximum recovery attempts"));
+    expect(escalationComment).toBeDefined();
+  });
+
+  it("still re-dispatches when recovery attempts are below the limit (attemptCount < 3)", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "failed",
+      retryReason: "assignment_recovery",
+      runErrorCode: "process_lost",
+    });
+
+    // Pre-seed a recovery action with attemptCount = 2 (below limit)
+    // This simulates the second re-dispatch attempt — should still be allowed
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `stranded_assigned_issue:${companyId}:${issueId}`,
+      evidence: { sourceIssueId: issueId, previousStatus: "todo", latestRunId: runId, retryReason: "assignment_recovery" },
+      nextAction: "Restore a live execution path for the assigned issue",
+      attemptCount: 2,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    // Should NOT escalate — attemptCount < 3, so re-dispatch proceeds normally
+    expect(result.escalated).toBe(0);
+    expect(result.dispatchRequeued).toBe(1);
+  });
 });
