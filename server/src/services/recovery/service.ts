@@ -134,6 +134,26 @@ function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   return null;
 }
 
+/**
+ * Maximum number of times the stranded-issue reconciliation loop will re-dispatch
+ * an issue before escalating it to `blocked`. Prevents the infinite cycle where:
+ *   reconcile -> re-dispatch -> run fails -> Phase 3 prune resets to `todo` -> reconcile -> re-dispatch -> ...
+ * Each re-dispatch increments `attemptCount` in `issue_recovery_actions`, so this
+ * guard fires on the (N+1)th cycle where the single-run `didAutomaticRecoveryFail`
+ * check alone would miss the pattern.
+ */
+const MAX_STRANDED_RECOVERY_ATTEMPTS = 3;
+
+async function hasExceededMaxRecoveryAttempts(
+  recoveryActionsSvc: ReturnType<typeof issueRecoveryActionService>,
+  companyId: string,
+  sourceIssueId: string,
+): Promise<boolean> {
+  const action = await recoveryActionsSvc.getActiveForIssue(companyId, sourceIssueId);
+  if (!action) return false;
+  return action.attemptCount >= MAX_STRANDED_RECOVERY_ATTEMPTS;
+}
+
 function didAutomaticRecoveryFail(
   latestRun: LatestIssueRun,
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
@@ -2116,6 +2136,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        if (await hasExceededMaxRecoveryAttempts(recoveryActionsSvc, issue.companyId, issue.id)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            comment:
+              `Paperclip has exceeded the maximum recovery attempts (${MAX_STRANDED_RECOVERY_ATTEMPTS}) for ` +
+              "this assigned `todo` issue. Each recovery attempt dispatched the agent but the run failed or " +
+              "the execution path was lost, and Phase 3 prune kept recycling the issue back to `todo`. " +
+              "Moving it to `blocked` to break the infinite re-dispatch loop.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         if (await isInvocationBudgetBlocked(issue, agentId)) {
           result.skipped += 1;
           continue;
@@ -2191,6 +2231,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        if (await hasExceededMaxRecoveryAttempts(recoveryActionsSvc, issue.companyId, issue.id)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun: successfulRun,
+            comment:
+              `Paperclip has exceeded the maximum recovery attempts (${MAX_STRANDED_RECOVERY_ATTEMPTS}) for ` +
+              "this assigned `in_progress` issue. Each recovery attempt dispatched the agent but the run stalled or " +
+              "the execution path was lost, and Phase 3 prune kept recycling the issue. " +
+              "Moving it to `blocked` to break the infinite re-dispatch loop.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         if (await isInvocationBudgetBlocked(issue, agentId)) {
           result.skipped += 1;
           continue;
@@ -2222,6 +2282,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
             `execution disappeared, but it still has no live execution path.${failureSummary ?? ""} ` +
             "Moving it to `blocked` so it is visible for intervention.",
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
+      if (await hasExceededMaxRecoveryAttempts(recoveryActionsSvc, issue.companyId, issue.id)) {
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+          comment:
+            `Paperclip has exceeded the maximum recovery attempts (${MAX_STRANDED_RECOVERY_ATTEMPTS}) for ` +
+            "this assigned `in_progress` issue. Each recovery attempt dispatched the agent but the run failed or " +
+            "the execution path was lost, and Phase 3 prune kept recycling the issue. " +
+            "Moving it to `blocked` to break the infinite re-dispatch loop.",
         });
         if (updated) {
           result.escalated += 1;
