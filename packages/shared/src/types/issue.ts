@@ -276,6 +276,8 @@ export interface IssueExecutionState {
   completedStageIds: string[];
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
+  recoveryAttemptCount?: number;
+  lastRecoveryAttemptAt?: string | null;
   monitor?: IssueExecutionMonitorState | null;
 }
 
