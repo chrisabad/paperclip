@@ -517,6 +517,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return attemptCount >= MAX_RECOVERY_RETRIES;
   }
 
+
   /** Persist an incremented recovery attempt (including timestamp) to the issue's executionState.
    *  This is called AFTER a successful enqueue so the next tick sees the updated backoff state. */
   async function persistRecoveryAttemptState(issue: typeof issues.$inferSelect): Promise<void> {
@@ -1932,7 +1933,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-      if (isStrandedIssueWithinBackoff(issue)) {
+        if (isStrandedIssueWithinBackoff(issue)) {
           result.skipped += 1;
           continue;
         }
@@ -2031,6 +2032,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           }
           continue;
         }
+
 
         if (isStrandedIssueWithinBackoff(issue)) {
           result.skipped += 1;
