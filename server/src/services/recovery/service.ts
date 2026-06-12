@@ -3,7 +3,11 @@ import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  MAX_RECOVERY_RETRIES,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  buildRecoveryAttemptState,
+  isWithinRecoveryBackoff,
+  resetRecoveryAttemptState,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
@@ -54,6 +58,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { parseIssueExecutionState } from "../issue-execution-policy.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -479,6 +484,47 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     return queued;
+  }
+
+  /** Check whether this issue is currently within a recovery backoff window.
+   *  Returns true (skip recovery) if the issue has hit the max retry ceiling
+   *  or has attempted recovery recently enough that it's still in the backoff window. */
+  function isStrandedIssueWithinBackoff(issue: typeof issues.$inferSelect): boolean {
+    const executionState = parseIssueExecutionState(issue.executionState);
+    if (!executionState) return false;
+    const attemptCount = executionState.recoveryAttemptCount ?? 0;
+    const lastAttemptAt = executionState.lastRecoveryAttemptAt ?? null;
+    if (attemptCount >= MAX_RECOVERY_RETRIES) return true;
+    if (lastAttemptAt && isWithinRecoveryBackoff(attemptCount, lastAttemptAt)) return true;
+    return false;
+  }
+
+  /** Persist an incremented recovery attempt (including timestamp) to the issue's executionState.
+   *  This is called AFTER a successful enqueue so the next tick sees the updated backoff state. */
+  async function persistRecoveryAttemptState(issue: typeof issues.$inferSelect): Promise<void> {
+    const executionState = parseIssueExecutionState(issue.executionState);
+    const current = executionState ?? {};
+    const attemptCount = (current.recoveryAttemptCount ?? 0) + 1;
+    const updatedExecutionState: Record<string, unknown> = {
+      ...current,
+      ...buildRecoveryAttemptState(attemptCount),
+    };
+    await issuesSvc.update(issue.id, {
+      executionState: updatedExecutionState,
+    });
+  }
+
+  /** Reset the backoff counters on an issue's executionState. Called when a
+   *  successful continuation or productive run is observed. */
+  async function resetIssueRecoveryBackoff(issue: typeof issues.$inferSelect): Promise<void> {
+    const executionState = parseIssueExecutionState(issue.executionState);
+    if (!executionState) return;
+    await issuesSvc.update(issue.id, {
+      executionState: {
+        ...executionState,
+        ...resetRecoveryAttemptState(),
+      },
+    });
   }
 
   async function enqueueInitialAssignedTodoDispatch(issue: typeof issues.$inferSelect, agentId: string) {
@@ -1648,6 +1694,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     if (!updated) return null;
 
+    // Reset backoff state on escalation so a future unblock starts fresh
+    try {
+      const executionState = parseIssueExecutionState(input.issue.executionState);
+      if (executionState?.recoveryAttemptCount) {
+        await issuesSvc.update(input.issue.id, {
+          executionState: {
+            ...executionState,
+            ...resetRecoveryAttemptState(),
+          },
+        });
+      }
+    } catch {
+      // Non-critical — backoff reset is best-effort
+    }
+
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const recoveryOwner = recoveryIssue?.assigneeAgentId ? await getAgent(recoveryIssue.assigneeAgentId) : null;
     const sourceAssignee = input.issue.assigneeAgentId ? await getAgent(input.issue.assigneeAgentId) : null;
@@ -1836,6 +1897,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        if (isStrandedIssueWithinBackoff(issue)) {
+          result.skipped += 1;
+          continue;
+        }
+
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
           agentId,
@@ -1845,6 +1911,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           retryOfRunId: latestRun.id,
         });
         if (queued) {
+          await persistRecoveryAttemptState(issue);
           result.dispatchRequeued += 1;
           result.issueIds.push(issue.id);
         } else {
@@ -1911,6 +1978,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        if (isStrandedIssueWithinBackoff(issue)) {
+          result.skipped += 1;
+          continue;
+        }
+
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
           agentId,
@@ -1920,6 +1992,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           retryOfRunId: successfulRun.id,
         });
         if (queued) {
+          await persistRecoveryAttemptState(issue);
           result.continuationRequeued += 1;
           result.issueIds.push(issue.id);
         } else {
@@ -1952,6 +2025,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if (isStrandedIssueWithinBackoff(issue)) {
+        result.skipped += 1;
+        continue;
+      }
+
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
         agentId,
@@ -1961,6 +2039,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
       });
       if (queued) {
+        await persistRecoveryAttemptState(issue);
         result.continuationRequeued += 1;
         result.issueIds.push(issue.id);
       } else {
