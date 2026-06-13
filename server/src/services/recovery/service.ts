@@ -1976,6 +1976,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         const successfulRun = latestRun;
 
         if (!isProductiveContinuationRun(successfulRun)) {
+          await resetIssueRecoveryBackoff(issue);
           result.successfulContinuationObserved += 1;
           result.skipped += 1;
           continue;
@@ -2001,6 +2002,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
         if (await isInvocationBudgetBlocked(issue, agentId)) {
           result.skipped += 1;
+          continue;
+        }
+
+        if (isStrandedIssueAtMaxRetries(issue)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun: successfulRun,
+            comment:
+              "Paperclip automatically retried productive continuation for this issue 5 times without success. " +
+              "Moving it to `blocked` so it is visible for manual intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
           continue;
         }
 
