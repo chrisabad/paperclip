@@ -495,8 +495,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const attemptCount = executionState.recoveryAttemptCount ?? 0;
     const lastAttemptAt = executionState.lastRecoveryAttemptAt ?? null;
     if (attemptCount >= MAX_RECOVERY_RETRIES) return true;
-    if (lastAttemptAt && isWithinRecoveryBackoff(attemptCount, lastAttemptAt)) return true;
+    if (lastAttemptAt && isWithinRecoveryBackoff(lastAttemptAt, attemptCount)) return true;
     return false;
+  }
+
+  /** Check whether this issue has exhausted max recovery retries.
+   *  Returns true if the issue should be escalated to blocked. */
+  function isStrandedIssueAtMaxRetries(issue: typeof issues.$inferSelect): boolean {
+    const executionState = parseIssueExecutionState(issue.executionState);
+    if (!executionState) return false;
+    const attemptCount = executionState.recoveryAttemptCount ?? 0;
+    return attemptCount >= MAX_RECOVERY_RETRIES;
   }
 
   /** Persist an incremented recovery attempt (including timestamp) to the issue's executionState.
@@ -504,10 +513,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function persistRecoveryAttemptState(issue: typeof issues.$inferSelect): Promise<void> {
     const executionState = parseIssueExecutionState(issue.executionState);
     const current = executionState ?? {};
-    const attemptCount = (current.recoveryAttemptCount ?? 0) + 1;
     const updatedExecutionState: Record<string, unknown> = {
       ...current,
-      ...buildRecoveryAttemptState(attemptCount),
+      ...buildRecoveryAttemptState(current.recoveryAttemptCount),
     };
     await issuesSvc.update(issue.id, {
       executionState: updatedExecutionState,
@@ -1897,7 +1905,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (isStrandedIssueWithinBackoff(issue)) {
+        if (isStrandedIssueAtMaxRetries(issue)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            comment:
+              "Paperclip automatically retried recovery for this issue 5 times without success. " +
+              "Moving it to `blocked` so it is visible for manual intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+      if (isStrandedIssueWithinBackoff(issue)) {
           result.skipped += 1;
           continue;
         }
