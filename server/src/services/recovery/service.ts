@@ -80,6 +80,7 @@ const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiv
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
+const STRANDED_RECENT_FAILURE_SKIP_MS = 30_000;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -120,7 +121,7 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "finishedAt"
 > & {
   resultJson?: unknown;
 } | null;
@@ -546,6 +547,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        finishedAt: heartbeatRuns.finishedAt,
         resultJson: heartbeatRuns.resultJson,
       })
       .from(heartbeatRuns)
@@ -574,6 +576,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        finishedAt: heartbeatRuns.finishedAt,
         resultJson: heartbeatRuns.resultJson,
       })
       .from(heartbeatRuns)
@@ -2921,6 +2924,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+
+      // AGE-2677: Guard against instant retry storms. If the latest run is a terminal
+      // unsuccessful run that finished within the last 30 seconds, skip re-queuing.
+      // This prevents adapter errors (adapter_failed, bad session id, etc.) from
+      // creating thousands of junk heartbeat_runs in minutes.
+      if (latestRun && latestRun.finishedAt && isUnsuccessfulTerminalIssueRun(latestRun)) {
+        const elapsed = Date.now() - latestRun.finishedAt.getTime();
+        if (elapsed < STRANDED_RECENT_FAILURE_SKIP_MS) {
+          result.skipped += 1;
+          continue;
+        }
+      }
+
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
