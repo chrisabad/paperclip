@@ -14749,6 +14749,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     cancelBudgetScopeWork,
 
+    /**
+     * Cancel all queued and scheduled_retry runs for a given issue.
+     * Does NOT cancel the currently running run (use cancelRun for that).
+     * Returns the count of runs cancelled.
+     */
+    cancelQueuedRunsForIssue: async (issueId: string, reason?: string) => {
+      const queuedRuns = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          ),
+        );
+      let count = 0;
+      for (const run of queuedRuns) {
+        await cancelRunInternal(run.id, reason ?? "Issue was cancelled");
+        count += 1;
+      }
+      return count;
+    },
+
     getRunIssueSummary: async (runId: string) => {
       const [run] = await db
         .select(heartbeatRunIssueSummaryColumns)

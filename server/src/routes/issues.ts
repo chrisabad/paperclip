@@ -6958,6 +6958,8 @@ export function issueRoutes(
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
+    const shouldCancelQueuedRunsForDoneStatus =
+      existing.status !== "done" && updateFields.status === "done";
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
@@ -7330,6 +7332,48 @@ export function issueRoutes(
           entityId: runToCancelForCancelledStatus.id,
           details: { source: "issue_status_cancelled", issueId: existing.id },
         });
+      }
+    }
+
+    // Cancel any queued or scheduled_retry runs for this issue
+    if (shouldCancelActiveRunForCancelledStatus) {
+      try {
+        const queuedCancelled = await heartbeat.cancelQueuedRunsForIssue(
+          existing.id,
+          "Issue was cancelled",
+        );
+        if (queuedCancelled > 0) {
+          logger.info(
+            { issueId: existing.id, count: queuedCancelled },
+            "cancelled queued runs for cancelled issue",
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { err, issueId: existing.id },
+          "failed to cancel queued runs for cancelled issue",
+        );
+      }
+    }
+
+    // Cancel any queued or scheduled_retry runs when issue goes done
+    if (shouldCancelQueuedRunsForDoneStatus) {
+      try {
+        const queuedCancelled = await heartbeat.cancelQueuedRunsForIssue(
+          existing.id,
+          "Issue was completed",
+        );
+        if (queuedCancelled > 0) {
+          logger.info(
+            { issueId: existing.id, count: queuedCancelled },
+            "cancelled queued runs for completed issue",
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { err, issueId: existing.id },
+          "failed to cancel queued runs for completed issue",
+        );
       }
     }
 
