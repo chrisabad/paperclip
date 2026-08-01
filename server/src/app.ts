@@ -38,6 +38,7 @@ import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
+import { createRecoveryActionsRouter } from "./routes/recovery-actions.js";
 import { pluginRoutes } from "./routes/plugins.js";
 import { adapterRoutes } from "./routes/adapters.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
@@ -188,6 +189,7 @@ export async function createApp(
     }),
   );
   api.use("/companies", companyRoutes(db, opts.storageService));
+  api.use("/companies/:companyId/recovery-actions", createRecoveryActionsRouter(db));
   api.use(companySkillRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
