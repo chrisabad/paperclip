@@ -34,7 +34,7 @@ describe("redaction", () => {
       OPENAI_API_KEY: REDACTED_EVENT_VALUE,
       OPENAI_API_KEY_REF: {
         type: "secret_ref",
-        secretId: "11111111-1111-1111-1111-111111111111",
+        secretId: REDACTED_EVENT_VALUE,
       },
       OPENAI_API_KEY_PLAIN: {
         type: "plain",
