@@ -404,3 +404,10 @@ export {
   type SetPluginState,
   type ListPluginState,
 } from "./plugin.js";
+
+export {
+  recoveryActionOutcomes,
+  resolveRecoveryActionSchema,
+  type ResolveRecoveryAction,
+  type RecoveryActionOutcome,
+} from "./recovery-action.js";
