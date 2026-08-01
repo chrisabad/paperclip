@@ -8201,7 +8201,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             source: recoverySource,
             retryOfRunId: run.id,
           }),
-          sessionIdBefore: recoverySessionBefore,
+          // Recovery wakes start with a fresh session to prevent weak models
+          // from locking into repetitive responses from accumulated wake history.
+          // The recovery context (issueId, wakeReason, retryOfRunId) is in
+          // contextSnapshot — the previous session is just baggage.
+          sessionIdBefore: null,
           retryOfRunId: run.id,
           updatedAt: now,
         })
