@@ -653,6 +653,10 @@ export {
   issueGraphLivenessAutoRecoveryRequestSchema,
   type PatchInstanceExperimentalSettings,
   type IssueGraphLivenessAutoRecoveryRequest,
+  recoveryActionOutcomes,
+  resolveRecoveryActionSchema,
+  type ResolveRecoveryAction,
+  type RecoveryActionOutcome,
 } from "./validators/index.js";
 
 export {
