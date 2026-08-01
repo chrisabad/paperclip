@@ -517,7 +517,8 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
-    const base = options?.restricted ? redactForRestrictedAgentView(agent) : agent;
+    const agentView = options?.restricted ? redactForRestrictedAgentView(agent) : agent;
+    const base = agentView!;
 
     return {
       ...base,
