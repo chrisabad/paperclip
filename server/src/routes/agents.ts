@@ -519,6 +519,10 @@ export function agentRoutes(
 
     const base = options?.restricted ? redactForRestrictedAgentView(agent) : agent;
 
+    if (!base) {
+      return { ...agent, chainOfCommand, access: accessState };
+    }
+
     return {
       ...base,
       adapterConfig: base.adapterConfig
