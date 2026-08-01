@@ -77,6 +77,51 @@ describe("buildPaperclipTaskMarkdown", () => {
     expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
     expect(commentWake).not.toContain("Create child issues from the approved plan only");
   });
+
+  it("includes issue status when present", () => {
+    const result = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Fix the bug",
+        status: "in_progress",
+        description: null,
+      },
+    });
+
+    expect(result).toContain('- Status: "in_progress"');
+  });
+
+  it("adds recovery context for recovery wake reasons", () => {
+    const result = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Fix the bug",
+        status: "in_progress",
+        description: null,
+      },
+      wakeReason: "issue_continuation_needed",
+    });
+
+    expect(result).toContain("Recovery context:");
+    expect(result).toContain("reason: issue_continuation_needed");
+    expect(result).toContain("pick up where it was left off");
+  });
+
+  it("omits recovery context for non-recovery wake reasons", () => {
+    const result = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-3404",
+        title: "Review PR",
+        description: null,
+      },
+      wakeReason: "issue_commented",
+    });
+
+    expect(result).not.toContain("Recovery context:");
+  });
 });
 
 describe("mergeCoalescedContextSnapshot", () => {
