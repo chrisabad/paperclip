@@ -2584,6 +2584,9 @@ export function issueRoutes(
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
+    if (req.body.assigneeUserId !== undefined) {
+      updateFields.assigneeUserId = req.body.assigneeUserId as string | null;
+    }
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
     assertCanManageIssueMonitor(req, existing.assigneeAgentId, req.body.executionPolicy !== undefined && monitorChanged);
 
@@ -2601,6 +2604,7 @@ export function issueRoutes(
         agentId: actor.agentId ?? null,
         userId: actor.actorType === "user" ? actor.actorId : null,
       },
+      boardOverride: req.actor.type === "board",
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
