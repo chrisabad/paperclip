@@ -2054,9 +2054,11 @@ export function buildPaperclipTaskMarkdown(input: {
     id: string;
     identifier: string | null;
     title: string;
+    status?: string | null;
     workMode?: string | null;
     description?: string | null;
   } | null;
+  wakeReason?: string | null;
   wakeComment?: {
     id: string;
     body: string;
@@ -2092,6 +2094,9 @@ export function buildPaperclipTaskMarkdown(input: {
       `- Issue: ${quoteTaskScalar(issue.identifier || issue.id)}`,
       `- Title: ${quoteTaskScalar(issue.title)}`,
     );
+    if (issue.status) {
+      lines.push(`- Status: ${quoteTaskScalar(issue.status)}`);
+    }
     if (issue.workMode === "planning") {
       let directive = "Make the plan only. Do not write code or perform implementation work.";
       if (wakeComment) {
@@ -2114,6 +2119,31 @@ export function buildPaperclipTaskMarkdown(input: {
   }
   if (wakeComment?.body.trim()) {
     lines.push("", "Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
+  }
+  const recoveryWakeReasons = new Set([
+    "issue_assignment_recovery",
+    "issue_continuation_needed",
+    "retry_failed_run",
+    "watchdog_output_timeout",
+  ]);
+  const wakeReason = input.wakeReason;
+  if (issue && wakeReason && recoveryWakeReasons.has(wakeReason)) {
+    const recoveryGuides: Record<string, string> = {
+      issue_assignment_recovery:
+        "Previous run was lost or dropped — restore any unfinished work and continue.",
+      issue_continuation_needed:
+        "Issue was left in-progress without activity — pick up where it was left off.",
+      retry_failed_run:
+        "Previous run failed — diagnose the issue and retry with fixes applied.",
+      watchdog_output_timeout:
+        "Previous run timed out — checkpoint partial work if possible and resume.",
+    };
+    const guide = recoveryGuides[wakeReason] ?? "Continue work on this issue.";
+    lines.push(
+      "",
+      "Recovery context:",
+      `This is a recovery wake (reason: ${wakeReason}). ${guide}`,
+    );
   }
   lines.push("", "Use this task context as the current assignment.");
   return lines.join("\n");
@@ -6675,10 +6705,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             id: issueRef.id,
             identifier: issueRef.identifier,
             title: issueRef.title,
+            status: issueRef.status,
             workMode: issueRef.workMode,
             description: issueRef.description,
           }
         : null,
+      wakeReason: readNonEmptyString(context.wakeReason),
       wakeComment: wakeCommentContext,
       interaction: {
         kind: readNonEmptyString(context.interactionKind),
