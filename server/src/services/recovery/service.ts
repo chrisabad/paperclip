@@ -10,6 +10,7 @@ import {
   resetRecoveryAttemptState,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
+  type ResolveRecoveryAction,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -26,7 +27,7 @@ import {
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
-import { forbidden, notFound } from "../../errors.js";
+import { badRequest, conflict, forbidden, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
@@ -2946,26 +2947,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (outcome !== "exhausted") {
         const sourceIssue = await issuesSvc.getById(sourceIssueId);
         if (sourceIssue) {
-          // Read current blocked-by relations
-          const blockers = await tx
-            .select({ blockedIssueId: issueRelations.blockedIssueId })
-            .from(issueRelations)
+          // Delete the blocking relation from recovery->source
+          await tx
+            .delete(issueRelations)
             .where(
               and(
                 eq(issueRelations.companyId, recoveryIssue.companyId),
-                eq(issueRelations.blockedByIssueId, recoveryIssueId),
+                eq(issueRelations.issueId, recoveryIssueId),
+                eq(issueRelations.relatedIssueId, sourceIssueId),
+                eq(issueRelations.type, "blocks"),
               ),
             );
-
-          const remainingBlockerIds = blockers
-            .filter((b) => b.blockedIssueId === sourceIssueId)
-            .map(() => recoveryIssueId);
-
-          await issueRelationsService.removeBlockedBy(
-            recoveryIssue.companyId,
-            sourceIssueId,
-            [recoveryIssueId],
-          );
 
           // Post comment to source issue noting the resolution
           await issuesSvc.addComment(
