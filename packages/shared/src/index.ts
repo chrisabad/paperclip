@@ -629,6 +629,17 @@ export {
 } from "./types/instance.js";
 
 export {
+  MIN_BACKOFF_MS,
+  BACKOFF_MULTIPLIER,
+  MAX_BACKOFF_MS,
+  MAX_RECOVERY_RETRIES,
+  computeRecoveryBackoffMs,
+  isWithinRecoveryBackoff,
+  buildRecoveryAttemptState,
+  resetRecoveryAttemptState,
+} from "./recovery-backoff.js";
+
+export {
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
 } from "./execution-workspace-guards.js";
@@ -642,6 +653,10 @@ export {
   issueGraphLivenessAutoRecoveryRequestSchema,
   type PatchInstanceExperimentalSettings,
   type IssueGraphLivenessAutoRecoveryRequest,
+  recoveryActionOutcomes,
+  resolveRecoveryActionSchema,
+  type ResolveRecoveryAction,
+  type RecoveryActionOutcome,
 } from "./validators/index.js";
 
 export {

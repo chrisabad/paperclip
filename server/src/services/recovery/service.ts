@@ -3,9 +3,14 @@ import type { Db } from "@paperclipai/db";
 import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  MAX_RECOVERY_RETRIES,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  buildRecoveryAttemptState,
+  isWithinRecoveryBackoff,
+  resetRecoveryAttemptState,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
+  type ResolveRecoveryAction,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -22,7 +27,7 @@ import {
 } from "@paperclipai/db";
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
-import { forbidden, notFound } from "../../errors.js";
+import { badRequest, conflict, forbidden, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
 import { redactSensitiveText } from "../../redaction.js";
@@ -54,6 +59,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { parseIssueExecutionState } from "../issue-execution-policy.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -64,6 +70,14 @@ const ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES = 8 * 1024;
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.strandedIssueRecovery;
 const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+
+// The origin kinds that count as "recovery actions" for board resolution
+const RECOVERY_ACTION_ORIGIN_KINDS = [
+  RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
+  RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+  RECOVERY_ORIGIN_KINDS.staleActiveRunEvaluation,
+  RECOVERY_ORIGIN_KINDS.issueProductivityReview,
+] as const;
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -479,6 +493,55 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     return queued;
+  }
+
+  /** Check whether this issue is currently within a recovery backoff window.
+   *  Returns true (skip recovery) if the issue has hit the max retry ceiling
+   *  or has attempted recovery recently enough that it's still in the backoff window. */
+  function isStrandedIssueWithinBackoff(issue: typeof issues.$inferSelect): boolean {
+    const executionState = parseIssueExecutionState(issue.executionState);
+    if (!executionState) return false;
+    const attemptCount = executionState.recoveryAttemptCount ?? 0;
+    const lastAttemptAt = executionState.lastRecoveryAttemptAt ?? null;
+    if (attemptCount >= MAX_RECOVERY_RETRIES) return true;
+    if (lastAttemptAt && isWithinRecoveryBackoff(lastAttemptAt, attemptCount)) return true;
+    return false;
+  }
+
+  /** Check whether this issue has exhausted max recovery retries.
+   *  Returns true if the issue should be escalated to blocked. */
+  function isStrandedIssueAtMaxRetries(issue: typeof issues.$inferSelect): boolean {
+    const executionState = parseIssueExecutionState(issue.executionState);
+    if (!executionState) return false;
+    const attemptCount = executionState.recoveryAttemptCount ?? 0;
+    return attemptCount >= MAX_RECOVERY_RETRIES;
+  }
+
+  /** Persist an incremented recovery attempt (including timestamp) to the issue's executionState.
+   *  This is called AFTER a successful enqueue so the next tick sees the updated backoff state. */
+  async function persistRecoveryAttemptState(issue: typeof issues.$inferSelect): Promise<void> {
+    const executionState = parseIssueExecutionState(issue.executionState);
+    const current = executionState ?? undefined;
+    const updatedExecutionState: Record<string, unknown> = {
+      ...current,
+      ...buildRecoveryAttemptState(current?.recoveryAttemptCount),
+    };
+    await issuesSvc.update(issue.id, {
+      executionState: updatedExecutionState,
+    });
+  }
+
+  /** Reset the backoff counters on an issue's executionState. Called when a
+   *  successful continuation or productive run is observed. */
+  async function resetIssueRecoveryBackoff(issue: typeof issues.$inferSelect): Promise<void> {
+    const executionState = parseIssueExecutionState(issue.executionState);
+    if (!executionState) return;
+    await issuesSvc.update(issue.id, {
+      executionState: {
+        ...executionState,
+        ...resetRecoveryAttemptState(),
+      },
+    });
   }
 
   async function enqueueInitialAssignedTodoDispatch(issue: typeof issues.$inferSelect, agentId: string) {
@@ -1648,6 +1711,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     if (!updated) return null;
 
+    // Reset backoff state on escalation so a future unblock starts fresh
+    try {
+      const executionState = parseIssueExecutionState(input.issue.executionState);
+      if (executionState?.recoveryAttemptCount) {
+        await issuesSvc.update(input.issue.id, {
+          executionState: {
+            ...executionState,
+            ...resetRecoveryAttemptState(),
+          },
+        });
+      }
+    } catch {
+      // Non-critical — backoff reset is best-effort
+    }
+
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const recoveryOwner = recoveryIssue?.assigneeAgentId ? await getAgent(recoveryIssue.assigneeAgentId) : null;
     const sourceAssignee = input.issue.assigneeAgentId ? await getAgent(input.issue.assigneeAgentId) : null;
@@ -1836,6 +1914,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        if (isStrandedIssueAtMaxRetries(issue)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            comment:
+              "Paperclip automatically retried recovery for this issue 5 times without success. " +
+              "Moving it to `blocked` so it is visible for manual intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+      if (isStrandedIssueWithinBackoff(issue)) {
+          result.skipped += 1;
+          continue;
+        }
+
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
           agentId,
@@ -1845,6 +1946,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           retryOfRunId: latestRun.id,
         });
         if (queued) {
+          await persistRecoveryAttemptState(issue);
           result.dispatchRequeued += 1;
           result.issueIds.push(issue.id);
         } else {
@@ -1883,6 +1985,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         const successfulRun = latestRun;
 
         if (!isProductiveContinuationRun(successfulRun)) {
+          await resetIssueRecoveryBackoff(issue);
           result.successfulContinuationObserved += 1;
           result.skipped += 1;
           continue;
@@ -1911,6 +2014,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        if (isStrandedIssueAtMaxRetries(issue)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun: successfulRun,
+            comment:
+              "Paperclip automatically retried productive continuation for this issue 5 times without success. " +
+              "Moving it to `blocked` so it is visible for manual intervention.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        if (isStrandedIssueWithinBackoff(issue)) {
+          result.skipped += 1;
+          continue;
+        }
+
         const queued = await enqueueStrandedIssueRecovery({
           issueId: issue.id,
           agentId,
@@ -1920,6 +2046,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           retryOfRunId: successfulRun.id,
         });
         if (queued) {
+          await persistRecoveryAttemptState(issue);
           result.continuationRequeued += 1;
           result.issueIds.push(issue.id);
         } else {
@@ -1952,6 +2079,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if (isStrandedIssueWithinBackoff(issue)) {
+        result.skipped += 1;
+        continue;
+      }
+
       const queued = await enqueueStrandedIssueRecovery({
         issueId: issue.id,
         agentId,
@@ -1961,6 +2093,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         retryOfRunId: latestRun?.id ?? issue.checkoutRunId ?? null,
       });
       if (queued) {
+        await persistRecoveryAttemptState(issue);
         result.continuationRequeued += 1;
         result.issueIds.push(issue.id);
       } else {
@@ -2744,6 +2877,115 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Math.max(1, Math.floor(asNumber(raw, fallback)));
   }
 
+  /**
+   * Resolve a board-facing recovery action by agent or board.
+   *
+   * A "recovery action" is any issue with an originKind in RECOVERY_ACTION_ORIGIN_KINDS.
+   * The resolution outcome determines what happens to the source issue:
+   *
+   *   - "restored":  source issue is unblocked, recovery issue marked done
+   *   - "cancelled": source issue is unblocked, recovery issue marked cancelled
+   *   - "exhausted": source issue stays blocked, recovery issue marked done
+   *                   (recovery exhausted, needs board intervention on source directly)
+   */
+  async function resolveRecoveryAction(
+    recoveryIssueId: string,
+    input: ResolveRecoveryAction,
+    actor: { agentId?: string; userId?: string; runId?: string | null },
+  ) {
+    const recoveryIssue = await issuesSvc.getById(recoveryIssueId);
+    if (!recoveryIssue) {
+      throw notFound("Recovery action not found");
+    }
+    if (recoveryIssue.status === "done" || recoveryIssue.status === "cancelled") {
+      throw conflict("Recovery action is already resolved", {
+        status: recoveryIssue.status,
+        completedAt: recoveryIssue.completedAt,
+        cancelledAt: recoveryIssue.cancelledAt,
+      });
+    }
+    if (!RECOVERY_ACTION_ORIGIN_KINDS.includes(recoveryIssue.originKind as any)) {
+      throw badRequest("Issue is not a recovery action", {
+        originKind: recoveryIssue.originKind,
+        expectedKinds: RECOVERY_ACTION_ORIGIN_KINDS,
+      });
+    }
+    if (!recoveryIssue.parentId && !recoveryIssue.originId) {
+      throw badRequest("Recovery action has no source issue reference", {
+        parentId: recoveryIssue.parentId,
+        originId: recoveryIssue.originId,
+      });
+    }
+
+    const sourceIssueId = recoveryIssue.parentId ?? recoveryIssue.originId!;
+
+    const { outcome, note } = input;
+
+    await db.transaction(async (tx) => {
+      // Resolve the recovery issue itself
+      if (outcome === "cancelled") {
+        await issuesSvc.update(
+          recoveryIssueId,
+          {
+            status: "cancelled",
+          },
+          tx,
+        );
+      } else {
+        // "restored" or "exhausted" — mark done
+        await issuesSvc.update(
+          recoveryIssueId,
+          {
+            status: "done",
+          },
+          tx,
+        );
+      }
+
+      // For "restored" and "cancelled", unblock the source issue by
+      // removing the recovery issue from its blocked-by list
+      if (outcome !== "exhausted") {
+        const sourceIssue = await issuesSvc.getById(sourceIssueId);
+        if (sourceIssue) {
+          // Delete the blocking relation from recovery->source
+          await tx
+            .delete(issueRelations)
+            .where(
+              and(
+                eq(issueRelations.companyId, recoveryIssue.companyId),
+                eq(issueRelations.issueId, recoveryIssueId),
+                eq(issueRelations.relatedIssueId, sourceIssueId),
+                eq(issueRelations.type, "blocks"),
+              ),
+            );
+
+          // Post comment to source issue noting the resolution
+          await issuesSvc.addComment(
+            sourceIssueId,
+            [
+              `**Recovery resolved:** ${outcome}`,
+              ...(note ? [`Note: ${note}`] : []),
+              `Recovery issue: ${recoveryIssue.identifier ?? recoveryIssue.id}`,
+            ].join("\n"),
+            actor,
+          );
+        }
+      }
+
+      // Post comment on the recovery issue itself
+      await issuesSvc.addComment(
+        recoveryIssueId,
+        [
+          `**Board resolution:** ${outcome}`,
+          ...(note ? [`Note: ${note}`] : []),
+        ].join("\n"),
+        actor,
+      );
+    });
+
+    return { success: true, issueId: recoveryIssueId, outcome };
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedAssignedIssue,
@@ -2753,5 +2995,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     buildIssueGraphLivenessAutoRecoveryPreview,
     reconcileIssueGraphLiveness,
     readRecoveryTimerIntervalMs,
+    resolveRecoveryAction,
   };
 }

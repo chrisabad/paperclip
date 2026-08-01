@@ -517,8 +517,17 @@ export function agentRoutes(
       buildAgentAccessState(agent),
     ]);
 
+    const agentView = options?.restricted ? redactForRestrictedAgentView(agent) : agent;
+    const base = agentView ?? agent;
+
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...base,
+      adapterConfig: base.adapterConfig
+        ? redactEventPayload(base.adapterConfig as Record<string, unknown>)
+        : base.adapterConfig,
+      runtimeConfig: base.runtimeConfig
+        ? redactEventPayload(base.runtimeConfig as Record<string, unknown>)
+        : base.runtimeConfig,
       chainOfCommand,
       access: accessState,
     };
