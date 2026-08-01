@@ -47,9 +47,12 @@ type TransitionInput = {
   requestedStatus?: string;
   requestedAssigneePatch: RequestedAssigneePatch;
   actor: ActorLike;
+  actorType?: string;
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
+  /** When true, skip the "only the active reviewer or approver can advance" check — used by board-level rescue */
+  boardOverride?: boolean;
 };
 
 type TransitionResult = {
@@ -775,6 +778,19 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       !principalsEqual(existingState?.currentParticipant ?? null, currentParticipant);
 
     if (attemptedStageAdvance && !stageStateDrifted) {
+      if (input.boardOverride) {
+        // Board rescue: clear execution state so the issue can be moved in/out of stages
+        clearExecutionStatePatch({
+          patch,
+          issueStatus: input.issue.status,
+          requestedStatus,
+          returnAssignee: existingState?.returnAssignee ?? null,
+        });
+        if (requestedStatus === "in_progress") {
+          patch.status = "in_progress";
+        }
+        return { patch };
+      }
       throw unprocessable("Only the active reviewer or approver can advance the current execution stage");
     }
 
