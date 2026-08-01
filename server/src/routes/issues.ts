@@ -2587,7 +2587,22 @@ export function issueRoutes(
     const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
     assertCanManageIssueMonitor(req, existing.assigneeAgentId, req.body.executionPolicy !== undefined && monitorChanged);
 
-    const transition = applyIssueExecutionPolicyTransition({
+    // Board override: when a board user explicitly changes status on an issue that is stuck
+    // in a workflow stage, bypass stage-gating and clear executionState to release the issue.
+    const isBoardStatusOverride =
+      req.actor.type === "board" &&
+      typeof req.body.status === "string" &&
+      req.body.status !== existing.status &&
+      (existing.status === "in_review" || existing.status === "in_progress") &&
+      (parseIssueExecutionState(existing.executionState) !== null || existing.executionPolicy !== null);
+
+    if (isBoardStatusOverride) {
+      updateFields.executionState = null;
+    }
+
+    const transition = isBoardStatusOverride
+      ? { patch: {} as Record<string, unknown>, decision: undefined, workflowControlledAssignment: false }
+      : applyIssueExecutionPolicyTransition({
       issue: existing,
       policy: nextExecutionPolicy,
       previousPolicy: previousExecutionPolicy,
@@ -2618,7 +2633,7 @@ export function issueRoutes(
     }
     Object.assign(updateFields, transition.patch);
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
-      const existingExecutionState = parseIssueExecutionState(existing.executionState);
+      const existingExecutionState = isBoardStatusOverride ? null : parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
         if (reviewRequest !== null) {
           res.status(422).json({ error: "reviewRequest requires an active review or approval stage" });
@@ -2660,7 +2675,8 @@ export function issueRoutes(
     }
 
     // PR-done guard: prevent marking issue as done when linked PRs are unmerged or have failing CI
-    const becameDone = existing.status !== "done" && updateFields.status === "done";
+    // Board status overrides bypass this guard (board explicitly chooses to override workflow gates)
+    const becameDone = !isBoardStatusOverride && existing.status !== "done" && updateFields.status === "done";
     if (becameDone) {
       const workProducts = await workProductsSvc.listForIssue(existing.id);
       const pullRequestProducts = workProducts.filter((wp) => wp.type === "pull_request");
