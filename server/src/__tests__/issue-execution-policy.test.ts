@@ -598,6 +598,134 @@ describe("issue execution policy transitions", () => {
       // No error — just no patch modifications
       expect(result.patch).toEqual({});
     });
+
+    describe("board override (rescue)", () => {
+      const policy = twoStagePolicy();
+      const reviewStageId = policy.stages[0].id;
+
+      it("board can advance from in_review to done despite not being the reviewer", () => {
+        const result = applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { agentId: boardUserId },
+          boardOverride: true,
+        });
+
+        // Board override clears execution state so issue can exit the review stage
+        expect(result.patch.executionState).toBeNull();
+        // No error thrown and patch is returned
+        expect(result.patch).toBeDefined();
+      });
+
+      it("board can move an issue from in_review back to todo", () => {
+        const result = applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "todo",
+          requestedAssigneePatch: {},
+          actor: { agentId: boardUserId },
+          boardOverride: true,
+        });
+
+        expect(result.patch.executionState).toBeNull();
+        expect(result.patch).toBeDefined();
+      });
+
+      it("board can move a stuck in_review issue to in_progress", () => {
+        const result = applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "in_progress",
+          requestedAssigneePatch: {},
+          actor: { agentId: boardUserId },
+          boardOverride: true,
+        });
+
+        expect(result.patch.executionState).toBeNull();
+        expect(result.patch.status).toBe("in_progress");
+      });
+
+      it("non-board override still rejects non-participant advancement", () => {
+        // This preserves the existing guard — boardOverride must be set to bypass
+        expect(() =>
+          applyIssueExecutionPolicyTransition({
+            issue: {
+              status: "in_review",
+              assigneeAgentId: qaAgentId,
+              assigneeUserId: null,
+              executionPolicy: policy,
+              executionState: {
+                status: "pending",
+                currentStageId: reviewStageId,
+                currentStageIndex: 0,
+                currentStageType: "review",
+                currentParticipant: { type: "agent", agentId: qaAgentId },
+                returnAssignee: { type: "agent", agentId: coderAgentId },
+                completedStageIds: [],
+                lastDecisionId: null,
+                lastDecisionOutcome: null,
+              },
+            },
+            policy,
+            requestedStatus: "done",
+            requestedAssigneePatch: { assigneeUserId: boardUserId },
+            actor: { agentId: coderAgentId },
+            commentBody: "Trying to bypass review",
+            boardOverride: false,
+          }),
+        ).toThrow("Only the active reviewer or approver can advance");
+      });
+    });
   });
 
   describe("comment requirements", () => {
