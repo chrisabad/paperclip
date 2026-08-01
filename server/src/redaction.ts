@@ -13,6 +13,9 @@ const JSON_SECRET_FIELD_TEXT_RE =
 const ESCAPED_JSON_SECRET_FIELD_TEXT_RE =
   /((?:\\")?(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))/gi;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
+/** Value-prefix patterns that identify secrets regardless of key name. Catches known credential prefixes not covered by JWT_VALUE_RE. */
+const SECRET_VALUE_PREFIX_RE =
+  /^pcp_[a-zA-Z0-9_-]{10,}$|^sk-[a-zA-Z0-9_-]{10,}$|^hch-v3-[a-zA-Z0-9_-]{10,}$/;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -23,8 +26,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function sanitizeValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map(sanitizeValue);
-  if (isSecretRefBinding(value)) return value;
+  if (isSecretRefBinding(value)) return { ...value, secretId: REDACTED_EVENT_VALUE };
   if (isPlainBinding(value)) return { type: "plain", value: sanitizeValue(value.value) };
+  if (typeof value === "string" && SECRET_VALUE_PREFIX_RE.test(value)) return REDACTED_EVENT_VALUE;
   if (!isPlainObject(value)) return value;
   return sanitizeRecord(value);
 }

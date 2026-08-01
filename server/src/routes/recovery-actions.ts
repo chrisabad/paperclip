@@ -8,7 +8,7 @@ import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function recoveryActionRoutes(db: Db) {
   const router = Router();
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, {});
   const recoverySvc = recoveryService(db, { enqueueWakeup: heartbeat.wakeup });
 
   router.post(
@@ -20,15 +20,10 @@ export function recoveryActionRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
 
       const actor = getActorInfo(req);
-      const mapActor = {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId ?? undefined,
-      };
       const result = await recoverySvc.resolveRecoveryAction(
         recoveryIssueId,
         req.body,
-        mapActor,
+        { agentId: actor.agentId ?? undefined, userId: undefined, runId: actor.runId ?? undefined },
       );
 
       await logActivity(db, {
