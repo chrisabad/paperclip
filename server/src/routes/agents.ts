@@ -518,7 +518,7 @@ export function agentRoutes(
     ]);
 
     const agentView = options?.restricted ? redactForRestrictedAgentView(agent) : agent;
-    const base = agentView!;
+    const base = agentView ?? agent;
 
     return {
       ...base,
