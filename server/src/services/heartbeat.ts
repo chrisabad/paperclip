@@ -7492,13 +7492,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+      let zombieErrorCode: string | null = null;
       const latestRun = await getRun(run.id);
       if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
         outcome = latestRun.status;
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
+        // Check for zombie run: exit 0, no error, but zero model activity
+        const usage = adapterResult.usage;
+        const hasZeroUsage =
+          !usage ||
+          ((usage.inputTokens ?? 0) === 0 &&
+            (usage.outputTokens ?? 0) === 0 &&
+            (usage.cachedInputTokens ?? 0) === 0);
+        const hasZeroCost = !adapterResult.costUsd || adapterResult.costUsd === 0;
+        if (hasZeroUsage && hasZeroCost) {
+          outcome = "failed";
+          zombieErrorCode = "no_model_activity";
+        } else {
+          outcome = "succeeded";
+        }
       } else {
         outcome = "failed";
       }
@@ -7517,7 +7531,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
             : outcome === "failed"
-              ? (adapterResult.errorCode ?? "adapter_failed")
+              ? (zombieErrorCode ?? adapterResult.errorCode ?? "adapter_failed")
               : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
