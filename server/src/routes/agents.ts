@@ -1183,13 +1183,20 @@ export function agentRoutes(
     );
   }
 
-  function summarizeAgentUpdateDetails(patch: Record<string, unknown>) {
+  function summarizeAgentUpdateDetails(
+    patch: Record<string, unknown>,
+    existingAdapterConfig?: Record<string, unknown> | null,
+  ) {
     const changedTopLevelKeys = Object.keys(patch).sort();
     const details: Record<string, unknown> = { changedTopLevelKeys };
 
     const adapterConfigPatch = asRecord(patch.adapterConfig);
     if (adapterConfigPatch) {
       details.changedAdapterConfigKeys = Object.keys(adapterConfigPatch).sort();
+      if (existingAdapterConfig) {
+        details.beforeAdapterConfig = existingAdapterConfig;
+        details.afterAdapterConfig = adapterConfigPatch;
+      }
     }
 
     const runtimeConfigPatch = asRecord(patch.runtimeConfig);
@@ -2684,7 +2691,7 @@ export function agentRoutes(
       action: "agent.updated",
       entityType: "agent",
       entityId: agent.id,
-      details: summarizeAgentUpdateDetails(patchData),
+      details: summarizeAgentUpdateDetails(patchData, existing.adapterConfig),
     });
 
     res.json(agent);
