@@ -1183,13 +1183,27 @@ export function agentRoutes(
     );
   }
 
-  function summarizeAgentUpdateDetails(patch: Record<string, unknown>) {
+  function summarizeAgentUpdateDetails(
+    patch: Record<string, unknown>,
+    existing?: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+  ) {
     const changedTopLevelKeys = Object.keys(patch).sort();
     const details: Record<string, unknown> = { changedTopLevelKeys };
 
     const adapterConfigPatch = asRecord(patch.adapterConfig);
     if (adapterConfigPatch) {
       details.changedAdapterConfigKeys = Object.keys(adapterConfigPatch).sort();
+      if (existing) {
+        const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
+        const before: Record<string, unknown> = {};
+        const after: Record<string, unknown> = {};
+        for (const key of Object.keys(adapterConfigPatch)) {
+          before[key] = existingAdapterConfig[key];
+          after[key] = adapterConfigPatch[key];
+        }
+        details.adapterConfigBefore = before;
+        details.adapterConfigAfter = after;
+      }
     }
 
     const runtimeConfigPatch = asRecord(patch.runtimeConfig);
@@ -2684,7 +2698,7 @@ export function agentRoutes(
       action: "agent.updated",
       entityType: "agent",
       entityId: agent.id,
-      details: summarizeAgentUpdateDetails(patchData),
+      details: summarizeAgentUpdateDetails(patchData, existing),
     });
 
     res.json(agent);
