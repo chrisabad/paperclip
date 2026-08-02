@@ -7507,7 +7507,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
+        if (rawUsage === null || (rawUsage.inputTokens === 0 && rawUsage.outputTokens === 0)) {
+          outcome = "failed";
+          adapterResult.errorCode = "no_model_activity";
+          adapterResult.errorMessage = "Run completed with zero model activity — no completions were made";
+        } else {
+          outcome = "succeeded";
+        }
       } else {
         outcome = "failed";
       }
