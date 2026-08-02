@@ -1355,6 +1355,15 @@ function normalizeUsageTotals(usage: UsageSummary | null | undefined): UsageTota
   };
 }
 
+/**
+ * Returns true when usage is null/undefined or has zero input AND zero output tokens.
+ * Used to detect zombie runs that exited 0 but made no model calls.
+ */
+function isZeroUsageRun(usage: UsageSummary | null | undefined): boolean {
+  if (!usage) return true;
+  return usage.inputTokens === 0 && usage.outputTokens === 0;
+}
+
 function readRawUsageTotals(usageJson: unknown): UsageTotals | null {
   const parsed = parseObject(usageJson);
   if (Object.keys(parsed).length === 0) return null;
@@ -1873,6 +1882,7 @@ async function buildPaperclipWakePayload(input: {
   const executionStage = parseObject(input.contextSnapshot.executionStage);
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
+  const sourceIssueId = readNonEmptyString(input.contextSnapshot.sourceIssueId);
   const continuationSummary = input.continuationSummary ?? null;
   const issueSummary =
     input.issueSummary ??
@@ -1890,6 +1900,21 @@ async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
+  const sourceIssue =
+    sourceIssueId && sourceIssueId !== issueId
+      ? await input.db
+          .select({
+            id: issues.id,
+            identifier: issues.identifier,
+            title: issues.title,
+            status: issues.status,
+            priority: issues.priority,
+            workMode: issues.workMode,
+          })
+          .from(issues)
+          .where(and(eq(issues.id, sourceIssueId), eq(issues.companyId, input.companyId)))
+          .then((rows) => rows[0] ?? null)
+      : null;
   if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
 
   const commentRows =
@@ -1972,6 +1997,16 @@ async function buildPaperclipWakePayload(input: {
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
+        }
+      : null,
+    sourceIssue: sourceIssue
+      ? {
+          id: sourceIssue.id,
+          identifier: sourceIssue.identifier,
+          title: sourceIssue.title,
+          status: sourceIssue.status,
+          priority: sourceIssue.priority,
+          workMode: sourceIssue.workMode,
         }
       : null,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
@@ -7498,7 +7533,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
+        // Detect zombie runs: exit 0, no error, but zero model activity
+        if (isZeroUsageRun(adapterResult.usage)) {
+          outcome = "failed";
+          adapterResult.errorCode = "no_model_activity";
+          adapterResult.errorMessage =
+            "Run completed with zero model activity — no completions were made";
+        } else {
+          outcome = "succeeded";
+        }
       } else {
         outcome = "failed";
       }
