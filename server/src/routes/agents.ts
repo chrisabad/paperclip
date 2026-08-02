@@ -1185,7 +1185,7 @@ export function agentRoutes(
 
   function summarizeAgentUpdateDetails(
     patch: Record<string, unknown>,
-    existing?: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+    existingAdapterConfig?: Record<string, unknown> | null,
   ) {
     const changedTopLevelKeys = Object.keys(patch).sort();
     const details: Record<string, unknown> = { changedTopLevelKeys };
@@ -1193,16 +1193,9 @@ export function agentRoutes(
     const adapterConfigPatch = asRecord(patch.adapterConfig);
     if (adapterConfigPatch) {
       details.changedAdapterConfigKeys = Object.keys(adapterConfigPatch).sort();
-      if (existing) {
-        const existingAdapterConfig = asRecord(existing.adapterConfig) ?? {};
-        const before: Record<string, unknown> = {};
-        const after: Record<string, unknown> = {};
-        for (const key of Object.keys(adapterConfigPatch)) {
-          before[key] = existingAdapterConfig[key];
-          after[key] = adapterConfigPatch[key];
-        }
-        details.adapterConfigBefore = before;
-        details.adapterConfigAfter = after;
+      if (existingAdapterConfig) {
+        details.beforeAdapterConfig = existingAdapterConfig;
+        details.afterAdapterConfig = adapterConfigPatch;
       }
     }
 
