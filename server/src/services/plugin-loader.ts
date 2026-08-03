@@ -1543,6 +1543,25 @@ export function pluginLoader(
 
       if (readyPlugins.length === 0) {
         log.info("plugin-loader: no ready plugins to load");
+
+        // Check for plugins in error status — these are invisible failures
+        // that should be surfaced at WARN level so operators know a plugin
+        // failed to activate on a previous boot.
+        const errorPlugins = (await registry.listByStatus("error")) as PluginRecord[];
+        if (errorPlugins.length > 0) {
+          for (const ep of errorPlugins) {
+            log.warn(
+              {
+                pluginId: ep.id,
+                pluginKey: ep.pluginKey,
+                version: ep.version,
+                lastError: ep.lastError ?? "unknown",
+              },
+              "plugin-loader: plugin is in error status — activation previously failed",
+            );
+          }
+        }
+
         return { total: 0, succeeded: 0, failed: 0, results: [] };
       }
 
