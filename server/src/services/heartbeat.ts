@@ -2139,10 +2139,19 @@ export function buildPaperclipTaskMarkdown(input: {
         "Previous run timed out — checkpoint partial work if possible and resume.",
     };
     const guide = recoveryGuides[wakeReason] ?? "Continue work on this issue.";
+    const statusLabel = issue.status ?? "unknown";
+    const dispositionOptions = [
+      `Continue working on this issue if work remains (current status: ${statusLabel}).`,
+      `Mark as done or cancelled if the issue is resolved or no longer relevant.`,
+      `Reassign to another agent if this isn't the right owner or scope.`,
+    ];
     lines.push(
       "",
       "Recovery context:",
       `This is a recovery wake (reason: ${wakeReason}). ${guide}`,
+      "",
+      "Disposition options:",
+      ...dispositionOptions.map((opt) => `- ${opt}`),
     );
   }
   lines.push("", "Use this task context as the current assignment.");

@@ -1932,7 +1932,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-      if (isStrandedIssueWithinBackoff(issue)) {
+        if (isStrandedIssueWithinBackoff(issue)) {
           result.skipped += 1;
           continue;
         }
