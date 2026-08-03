@@ -6264,7 +6264,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const shouldRetry = (run.processLossRetryCount ?? 0) < 2;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
@@ -7511,12 +7511,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } else {
         outcome = "failed";
       }
+
+      // AGE-3475: Detect zombie runs — runs that "succeeded" with zero model activity
+      if (outcome === "succeeded" && rawUsage && rawUsage.inputTokens === 0 && rawUsage.outputTokens === 0) {
+        outcome = "failed";
+      }
+
       const runErrorMessage =
         outcome === "cancelled"
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
           : outcome === "succeeded"
             ? null
-            : redactCurrentUserText(
+            : outcome === "failed" && rawUsage && rawUsage.inputTokens === 0 && rawUsage.outputTokens === 0
+              ? "Run completed with no model activity"
+              : redactCurrentUserText(
                 adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               );
@@ -7525,9 +7533,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? "timeout"
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
-            : outcome === "failed"
-              ? (adapterResult.errorCode ?? "adapter_failed")
-              : null;
+            : outcome === "failed" && rawUsage && rawUsage.inputTokens === 0 && rawUsage.outputTokens === 0
+              ? "no_model_activity"
+              : outcome === "failed"
+                ? (adapterResult.errorCode ?? "adapter_failed")
+                : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
       if (handle) {
