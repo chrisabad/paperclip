@@ -4061,8 +4061,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eq(heartbeatRuns.agentId, run.agentId),
               inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
               sql`(
-                ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}
-                or ${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issue.id}
+                ${heartbeatRuns.issueId} = ${issue.id}
+                or ${heartbeatRuns.taskId} = ${issue.id}
               )`,
               sql`${heartbeatRuns.id} <> ${run.id}`,
             ),
@@ -4468,6 +4468,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: retryContextSnapshot,
+          issueId: readNonEmptyString(contextSnapshot.issueId),
+          taskId: readNonEmptyString(contextSnapshot.taskId),
+          taskKey: deriveTaskKey(contextSnapshot, null),
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
           issueCommentStatus: "not_applicable",
@@ -4675,6 +4678,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: retryContextSnapshot,
+          issueId,
+          taskId: readNonEmptyString(contextSnapshot.taskId),
+          taskKey: deriveTaskKey(contextSnapshot, null),
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
           processLossRetryCount: (run.processLossRetryCount ?? 0) + 1,
@@ -5151,8 +5157,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eq(heartbeatRuns.scheduledRetryAttempt, schedule.attempt),
               inArray(heartbeatRuns.status, [...MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES]),
               issueId
-                ? sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`
-                : sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' is null`,
+                ? sql`${heartbeatRuns.issueId} = ${issueId}`
+                : sql`${heartbeatRuns.issueId} is null`,
             ),
           )
           .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
@@ -5293,6 +5299,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           status: "scheduled_retry",
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: retryContextSnapshot,
+          issueId: readNonEmptyString(contextSnapshot.issueId),
+          taskId: readNonEmptyString(contextSnapshot.taskId),
+          taskKey: deriveTaskKey(contextSnapshot, null),
           sessionIdBefore: sessionBefore,
           retryOfRunId: run.id,
           scheduledRetryAt: schedule.dueAt,
@@ -8082,6 +8091,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "queued",
             wakeupRequestId: deferred.id,
             contextSnapshot: promotedContextSnapshot,
+            issueId: readNonEmptyString(promotedContextSnapshot.issueId),
+            taskId: readNonEmptyString(promotedContextSnapshot.taskId),
+            taskKey: deriveTaskKey(promotedContextSnapshot, promotedPayload),
             sessionIdBefore: sessionBefore,
             continuationAttempt: promotedContinuationAttempt,
           })
@@ -8210,6 +8222,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             source: recoverySource,
             retryOfRunId: run.id,
           }),
+          issueId: issue.id,
+          taskId: issue.id,
+          taskKey: issue.id,
           sessionIdBefore: recoverySessionBefore,
           retryOfRunId: run.id,
           updatedAt: now,
@@ -8804,6 +8819,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             status: "queued",
             wakeupRequestId: wakeupRequest.id,
             contextSnapshot: enrichedContextSnapshot,
+            issueId,
+            taskId: readNonEmptyString(enrichedContextSnapshot.taskId),
+            taskKey: effectiveTaskKey,
             sessionIdBefore: sessionBefore,
             continuationAttempt,
           })
@@ -8933,6 +8951,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: "queued",
         wakeupRequestId: wakeupRequest.id,
         contextSnapshot: enrichedContextSnapshot,
+        issueId,
+        taskId: readNonEmptyString(enrichedContextSnapshot.taskId),
+        taskKey: effectiveTaskKey,
         sessionIdBefore: sessionBefore,
         continuationAttempt,
       })
