@@ -1513,6 +1513,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       summary: "Run completed but made no model calls.",
       provider: "test",
       model: "test-model",
+      usage: { inputTokens: 0, outputTokens: 0 },
     });
 
     const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
@@ -2303,6 +2304,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       summary: "I will inspect the repo next and then implement the fix.",
       provider: "test",
       model: "test-model",
+      usage: { inputTokens: 10, outputTokens: 5 },
     });
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",

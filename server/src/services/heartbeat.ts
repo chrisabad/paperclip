@@ -7507,7 +7507,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        if (rawUsage === null || (rawUsage.inputTokens === 0 && rawUsage.outputTokens === 0)) {
+        // A zombie run is one that made zero model calls. Only treat it as such
+        // when usage is EXPLICITLY reported as zero tokens. Absent usage
+        // (rawUsage === null) means the adapter did not report usage — a
+        // legitimate run, not a zombie. AdapterExecutionResult.usage is optional.
+        if (rawUsage !== null && rawUsage.inputTokens === 0 && rawUsage.outputTokens === 0) {
           outcome = "failed";
           adapterResult.errorCode = "no_model_activity";
           adapterResult.errorMessage = "Run completed with zero model activity — no completions were made";
