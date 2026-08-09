@@ -66,17 +66,20 @@ cd / && rm -rf /tmp/paperclip-test-*
 ## Guard Script
 
 The repo includes `scripts/safe-test.sh` which detects production env vars and
-refuses to run if any are set.  Use it as a drop-in replacement for `pnpm test`:
+refuses to run if any are set.  It is wired into the default test entrypoint:
+`pnpm test` now invokes the guard first, so running the suite inside the
+production container is refused by default.
 
 ```sh
-./scripts/safe-test.sh
+pnpm test          # runs the guard, then the suite if the env is safe
+./scripts/safe-test.sh --check   # check only, exit 0 if safe
 ```
 
-Or to check only:
-
-```sh
-./scripts/safe-test.sh --check
-```
+The guard refuses to run if any of `PAPERCLIP_HOME`, `PAPERCLIP_INSTANCE_ID`,
+`PAPERCLIP_CONFIG`, `PAPERCLIP_CONTEXT`, `PAPERCLIP_IN_WORKTREE`, or
+`PAPERCLIP_WORKTREE_NAME` are set, or if the repo path resolves under
+`/paperclip/*`.  To run tests directly without the guard (e.g. from a scratch
+checkout where the env is already known safe), use `pnpm test:run`.
 
 ## Source Clones in the Production Data Volume
 
