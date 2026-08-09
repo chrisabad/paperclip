@@ -30,6 +30,8 @@ const adapterExecute = vi.hoisted(() => vi.fn(async () => ({
   sessionDisplayId: "session-1",
   provider: "test",
   model: "test-model",
+  usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+  costUsd: 0.001,
 })));
 
 vi.mock("../adapters/index.js", () => ({

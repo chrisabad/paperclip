@@ -115,6 +115,10 @@ async function createControlledGatewayServer() {
               status: "ok",
               startedAt: 1,
               endedAt: 2,
+              meta: {
+                usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+                costUsd: 0.001,
+              },
             },
           }),
         );

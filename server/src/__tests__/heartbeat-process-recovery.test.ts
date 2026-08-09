@@ -42,6 +42,8 @@ const mockAdapterExecute = vi.hoisted(() =>
     summary: "Recovered stranded heartbeat work.",
     provider: "test",
     model: "test-model",
+    usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+    costUsd: 0.001,
   })),
 );
 
@@ -275,6 +277,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       summary: "Recovered stranded heartbeat work.",
       provider: "test",
       model: "test-model",
+      usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+      costUsd: 0.001,
     }));
     runningProcesses.clear();
     for (const child of childProcesses) {
@@ -1276,6 +1280,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         summary: "Implemented the backend detector, but did not choose a final issue state.",
         provider: "test",
         model: "test-model",
+        usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+        costUsd: 0.001,
       };
     });
     const heartbeat = heartbeatService(db);
@@ -1379,6 +1385,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         summary: "Implemented recovery handling, but did not choose a final issue state.",
         provider: "test",
         model: "test-model",
+        usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+        costUsd: 0.001,
       };
     });
     const heartbeat = heartbeatService(db);
@@ -1460,6 +1468,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         summary: "Created comments, a plan document, and a work product without choosing a disposition.",
         provider: "test",
         model: "test-model",
+        usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+        costUsd: 0.001,
       };
     });
     const heartbeat = heartbeatService(db);
@@ -1527,6 +1537,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
       provider: "test",
       model: "test-model",
+      usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+      costUsd: 0.001,
     });
     const heartbeat = heartbeatService(db);
 
@@ -2268,6 +2280,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       summary: "I will inspect the repo next and then implement the fix.",
       provider: "test",
       model: "test-model",
+      usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+      costUsd: 0.001,
     });
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
@@ -2346,6 +2360,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         summary: "Plan:\n- Inspect files\n- Implement fix",
         provider: "test",
         model: "test-model",
+        usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+        costUsd: 0.001,
       };
     });
     const heartbeat = heartbeatService(db);

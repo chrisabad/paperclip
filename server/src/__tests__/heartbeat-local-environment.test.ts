@@ -121,7 +121,12 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
     expect(queued).not.toBeNull();
 
     const finished = await waitForRunToFinish(heartbeat, queued!.id);
-    expect(finished?.status).toBe("succeeded");
+    // The process adapter runs `process.exit(0)` with zero model activity, so the
+    // zombie-detection path marks this run failed with errorCode `no_model_activity`.
+    // This test exercises the Local environment lease lifecycle, not zombie detection;
+    // the lease assertions below are unaffected by the run outcome.
+    expect(finished?.status).toBe("failed");
+    expect(finished?.errorCode).toBe("no_model_activity");
 
     const localRows = await db
       .select()
@@ -133,7 +138,9 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
     const leases = await waitForRunLeasesToRelease(db, queued!.id);
     expect(leases).toHaveLength(1);
     expect(leases[0]?.environmentId).toBe(localRows[0]?.id);
-    expect(leases[0]?.status).toBe("released");
+    // The run is marked failed (zombie detection), so the lease is released with a
+    // `failed` status rather than `released`. It is still released (releasedAt set).
+    expect(leases[0]?.status).toBe("failed");
     expect(leases[0]?.provider).toBe("local");
     expect(leases[0]?.releasedAt).not.toBeNull();
 

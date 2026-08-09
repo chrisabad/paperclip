@@ -30,6 +30,8 @@ const mockAdapterExecute = vi.hoisted(() =>
     summary: "Stale-queue invalidation test run.",
     provider: "test",
     model: "test-model",
+    usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+    costUsd: 0.001,
   })),
 );
 
@@ -154,6 +156,8 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       summary: "Stale-queue invalidation test run.",
       provider: "test",
       model: "test-model",
+      usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+      costUsd: 0.001,
     }));
     runningProcesses.clear();
     let idlePolls = 0;

@@ -8,6 +8,7 @@ import {
   agentWakeupRequests,
   companySkills,
   companies,
+  costEvents,
   createDb,
   documentRevisions,
   documents,
@@ -35,6 +36,8 @@ const mockAdapterExecute = vi.hoisted(() =>
     summary: "Dependency-aware heartbeat test run.",
     provider: "test",
     model: "test-model",
+    usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+    costUsd: 0.001,
   })),
 );
 
@@ -105,6 +108,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       summary: "Dependency-aware heartbeat test run.",
       provider: "test",
       model: "test-model",
+      usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+      costUsd: 0.001,
     }));
     runningProcesses.clear();
     let idlePolls = 0;
@@ -124,6 +129,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await new Promise((resolve) => setTimeout(resolve, 50));
     await db.delete(activityLog);
     await db.delete(companySkills);
+    await db.delete(costEvents);
     await db.delete(issueComments);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
@@ -294,6 +300,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         summary: "Ready dependency scheduling run complete.",
         provider: "test",
         model: "test-model",
+        usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+        costUsd: 0.001,
       };
     });
 
@@ -410,6 +418,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         summary: "First assignment run completed.",
         provider: "test",
         model: "test-model",
+        usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0 },
+        costUsd: 0.001,
       };
     });
 
