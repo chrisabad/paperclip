@@ -7508,11 +7508,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
+        // A run is a "zombie" only when usage was explicitly recorded and is all-zero
+        // (no tokens, no cost). When no usage was reported at all (rawUsage === null),
+        // we cannot conclude the run did no work — preserve the original "succeeded"
+        // classification so successful runs without usage data are not mis-marked failed.
         const hasModelActivity = rawUsage !== null &&
           (rawUsage.inputTokens > 0 || rawUsage.cachedInputTokens > 0 || rawUsage.outputTokens > 0 ||
            (adapterResult.costUsd ?? 0) > 0);
-        isZombieRun = !hasModelActivity;
-        outcome = hasModelActivity ? "succeeded" : "failed";
+        isZombieRun = rawUsage !== null && !hasModelActivity;
+        outcome = isZombieRun ? "failed" : "succeeded";
       } else {
         outcome = "failed";
       }
