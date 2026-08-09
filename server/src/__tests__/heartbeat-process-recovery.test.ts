@@ -1504,6 +1504,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(recoveryIssues).toHaveLength(0);
   });
 
+  it("classifies a zero-model-activity run as failed with errorCode no_model_activity instead of succeeded", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Run completed but made no model calls.",
+      provider: "test",
+      model: "test-model",
+    });
+
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const classifiedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    expect(classifiedRun?.status).toBe("failed");
+    expect(classifiedRun?.errorCode).toBe("no_model_activity");
+    expect(classifiedRun?.error).toContain("zero model activity");
+
+    const handoffWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(handoffWakeups.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toHaveLength(0);
+  });
+
   it("redacts secret-bearing successful-run detected progress before handoff disclosure", async () => {
     const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const bearerSecret = "live-bearer-token-value";
