@@ -2351,8 +2351,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           and(
             eq(heartbeatRuns.companyId, companyId),
             inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
-            sql`(${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}
-              OR ${heartbeatRuns.contextSnapshot}->>'taskId' = ${issueId})`,
+            sql`(${heartbeatRuns.issueId} = ${issueId}
+              OR ${heartbeatRuns.taskId} = ${issueId})`,
           ),
         )
         .limit(1)
