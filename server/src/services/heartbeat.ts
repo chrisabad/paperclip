@@ -6264,7 +6264,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         });
       }
 
-      const shouldRetry = tracksLocalChild && (!!run.processPid || !!run.processGroupId) && (run.processLossRetryCount ?? 0) < 1;
+      const shouldRetry = (run.processLossRetryCount ?? 0) < 2;
       const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
@@ -7501,13 +7501,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const normalizedUsage = sessionUsageResolution.normalizedUsage;
 
       let outcome: "succeeded" | "failed" | "cancelled" | "timed_out";
+      let isZombieRun = false;
       const latestRun = await getRun(run.id);
       if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
         outcome = latestRun.status;
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
+        // A run is a "zombie" only when usage was explicitly recorded and is all-zero
+        // (no tokens, no cost). When no usage was reported at all (rawUsage === null),
+        // we cannot conclude the run did no work — preserve the original "succeeded"
+        // classification so successful runs without usage data are not mis-marked failed.
+        const hasModelActivity = rawUsage !== null &&
+          (rawUsage.inputTokens > 0 || rawUsage.cachedInputTokens > 0 || rawUsage.outputTokens > 0 ||
+           (adapterResult.costUsd ?? 0) > 0);
+        isZombieRun = rawUsage !== null && !hasModelActivity;
+        outcome = isZombieRun ? "failed" : "succeeded";
       } else {
         outcome = "failed";
       }
@@ -7516,17 +7525,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
           : outcome === "succeeded"
             ? null
-            : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
-                currentUserRedactionOptions,
-              );
+            : isZombieRun
+              ? "Run completed with no model activity"
+              : redactCurrentUserText(
+                  adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                  currentUserRedactionOptions,
+                );
       const runErrorCode =
         outcome === "timed_out"
           ? "timeout"
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
             : outcome === "failed"
-              ? (adapterResult.errorCode ?? "adapter_failed")
+              ? (isZombieRun ? "no_model_activity" : adapterResult.errorCode ?? "adapter_failed")
               : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;

@@ -1008,7 +1008,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
       processPid: 999_999_999,
-      processLossRetryCount: 1,
+      processLossRetryCount: 2,
     });
     const resolvedBlockerId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -1091,7 +1091,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
       processPid: 999_999_999,
-      processLossRetryCount: 1,
+      processLossRetryCount: 2,
       runErrorCode: "process_lost",
       runError: "Authorization: Bearer sk-test-recovery-secret",
     });
@@ -1165,7 +1165,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
       processPid: 999_999_999,
-      processLossRetryCount: 1,
+      processLossRetryCount: 2,
     });
     await db.insert(issueTreeHolds).values({
       companyId,
