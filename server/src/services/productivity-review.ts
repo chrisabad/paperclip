@@ -98,9 +98,9 @@ function productivityReviewFingerprint(sourceIssueId: string) {
 
 function issueRunScopeSql(issueId: string) {
   return sql`(
-    ${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}
-    or ${heartbeatRuns.contextSnapshot}->>'taskId' = ${issueId}
-    or ${heartbeatRuns.contextSnapshot}->>'taskKey' = ${issueId}
+    ${heartbeatRuns.issueId} = ${issueId}
+    or ${heartbeatRuns.taskId} = ${issueId}
+    or ${heartbeatRuns.taskKey} = ${issueId}
   )`;
 }
 

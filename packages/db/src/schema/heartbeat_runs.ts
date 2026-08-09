@@ -54,6 +54,9 @@ export const heartbeatRuns = pgTable(
     lastUsefulActionAt: timestamp("last_useful_action_at", { withTimezone: true }),
     nextAction: text("next_action"),
     contextSnapshot: jsonb("context_snapshot").$type<Record<string, unknown>>(),
+    issueId: text("issue_id"),
+    taskId: text("task_id"),
+    taskKey: text("task_key"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -62,6 +65,21 @@ export const heartbeatRuns = pgTable(
       table.companyId,
       table.agentId,
       table.startedAt,
+    ),
+    companyIssueIdx: index("heartbeat_runs_company_issue_idx").on(
+      table.companyId,
+      table.issueId,
+      table.createdAt,
+    ),
+    companyTaskIdIdx: index("heartbeat_runs_company_task_id_idx").on(
+      table.companyId,
+      table.taskId,
+      table.createdAt,
+    ),
+    companyTaskKeyIdx: index("heartbeat_runs_company_task_key_idx").on(
+      table.companyId,
+      table.taskKey,
+      table.createdAt,
     ),
     companyLivenessIdx: index("heartbeat_runs_company_liveness_idx").on(
       table.companyId,
