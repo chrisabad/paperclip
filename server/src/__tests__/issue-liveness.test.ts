@@ -286,6 +286,52 @@ describe("issue graph liveness classifier", () => {
     });
   });
 
+  it("does not fire in_review_without_action_path when assignee is an invokable agent with no executionState and issue was recently updated (review-gate race window)", () => {
+    const reviewIssueId = "review-1";
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+          updatedAt: new Date().toISOString(), // just transitioned — review-gate grace window
+        }),
+      ],
+      relations: [],
+      agents: [agent({ status: "idle" }), manager],
+    });
+
+    expect(findings).toHaveLength(0);
+  });
+
+  it("fires in_review_without_action_path when assignee is invokable but issue has been in_review for longer than the grace period", () => {
+    const reviewIssueId = "review-1";
+    const staleDate = new Date(Date.now() - 60_000).toISOString(); // 60s ago, past 30s grace period
+
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          identifier: "PAP-2279",
+          title: "Screenshot acceptance review",
+          status: "in_review",
+          assigneeAgentId: coderId,
+          executionState: null,
+          updatedAt: staleDate,
+        }),
+      ],
+      relations: [],
+      agents: [agent({ status: "idle" }), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ state: "in_review_without_action_path" });
+  });
+
   it("skips paused stalled review assignees when choosing recovery owner candidates", () => {
     const reviewIssueId = "review-1";
 

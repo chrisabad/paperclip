@@ -26,6 +26,7 @@ export interface IssueLivenessIssueInput {
   executionState?: Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
   monitorAttemptCount?: number | null;
+  updatedAt?: string | Date | null;
 }
 
 export interface IssueLivenessRelationInput {
@@ -453,6 +454,17 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     }
 
     if (!reviewIssue.assigneeAgentId || reviewIssue.assigneeUserId) return null;
+    const assigneeAgent = agentsById.get(reviewIssue.assigneeAgentId);
+    // review-gate writes status=in_review then executionState in two separate DB ops.
+    // Suppress the finding during the grace window to avoid a false recovery that
+    // destroys the review chain before executionState is persisted.
+    const REVIEW_GATE_GRACE_PERIOD_MS = 30_000;
+    if (
+      isInvokableAgent(assigneeAgent) &&
+      assigneeAgent?.companyId === reviewIssue.companyId &&
+      reviewIssue.updatedAt != null &&
+      Date.now() - new Date(reviewIssue.updatedAt).getTime() < REVIEW_GATE_GRACE_PERIOD_MS
+    ) return null;
 
     return finding({
       issue: source,
