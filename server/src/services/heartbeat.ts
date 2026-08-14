@@ -183,6 +183,7 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
+const HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS = 100;
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -5570,6 +5571,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
+  async function countRunningRunsGlobal() {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.status, "running"));
+    return Number(count ?? 0);
+  }
+
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
     if (run.status !== "queued") return run;
     const agent = await getAgent(run.agentId);
@@ -5589,6 +5598,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     if (budgetBlock) {
       await cancelRunInternal(run.id, budgetBlock.reason);
+      return null;
+    }
+
+    const globalRunningCount = await countRunningRunsGlobal();
+    if (globalRunningCount >= HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS) {
       return null;
     }
 
@@ -6455,6 +6469,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return [];
       }
       const policy = parseHeartbeatPolicy(agent);
+      const globalRunningCount = await countRunningRunsGlobal();
+      if (globalRunningCount >= HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS) {
+        logger.info({ globalRunningCount }, "global concurrency limit reached, skipping agent heartbeat run");
+        return [];
+      }
+
       const runningCount = await countRunningRunsForAgent(agentId);
       const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
       if (availableSlots <= 0) return [];
