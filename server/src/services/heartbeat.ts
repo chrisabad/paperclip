@@ -5606,6 +5606,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    const runningCount = await countRunningRunsForAgent(run.agentId);
+    if (runningCount >= HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT) {
+      return null;
+    }
+
     const issueId = readNonEmptyString(context.issueId);
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(run.companyId, issueId);
