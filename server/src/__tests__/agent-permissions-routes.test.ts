@@ -1433,4 +1433,39 @@ describe.sequential("agent permission routes", () => {
     expect(res.status).toBe(403);
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
+
+  it("preserves existing runtimeConfig heartbeat cap when patching a partial runtimeConfig", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "codex_local",
+      runtimeConfig: {
+        sessionKeyStrategy: "run",
+        heartbeat: { maxConcurrentRuns: 1 },
+      },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ runtimeConfig: { sessionKeyStrategy: "run" } }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        runtimeConfig: expect.objectContaining({
+          sessionKeyStrategy: "run",
+          heartbeat: expect.objectContaining({ maxConcurrentRuns: 1 }),
+        }),
+      }),
+      expect.anything(),
+    );
+  });
 });

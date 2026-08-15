@@ -823,6 +823,32 @@ export function agentRoutes(
     return value as Record<string, unknown>;
   }
 
+  /**
+   * Merge `patch` over `base`, recursing into nested plain objects. Top-level
+   * keys present in `patch` replace; keys absent are preserved; nested objects
+   * merge recursively. Arrays and non-object leaves are replaced wholesale.
+   *
+   * Used by PATCH /agents/:id so a partial runtimeConfig (e.g.
+   * `{ sessionKeyStrategy: "run" }`) preserves sibling keys on the existing row
+   * (e.g. `heartbeat.maxConcurrentRuns`) instead of dropping them.
+   */
+  function deepMergeRecord(
+    base: Record<string, unknown>,
+    patch: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const result: Record<string, unknown> = { ...base };
+    for (const [key, value] of Object.entries(patch)) {
+      const existingValue = asRecord(result[key]);
+      const patchValue = asRecord(value);
+      if (existingValue && patchValue) {
+        result[key] = deepMergeRecord(existingValue, patchValue);
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
+  }
+
   function asNonEmptyString(value: unknown): string | null {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
@@ -2649,10 +2675,25 @@ export function agentRoutes(
     }
     if (requestedRuntimeConfig) {
       const baseAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
+      // Merge the requested runtimeConfig over the existing row so a partial
+      // PATCH (e.g. `{ sessionKeyStrategy: "run" }`) preserves sibling keys such
+      // as `heartbeat.maxConcurrentRuns` instead of silently dropping them.
+      const effectiveRuntimeConfig = deepMergeRecord(
+        asRecord(existing.runtimeConfig) ?? {},
+        requestedRuntimeConfig,
+      );
+      // NOTE: assertNoAgentRuntimeConfigAdapterConfigMutation intentionally runs
+      // on the PATCH-ONLY config (line above), NOT on effectiveRuntimeConfig. The
+      // guard is presence-based for agent callers: it rejects if the config
+      // CONTAINS an instructions-bundle key, even unchanged. Re-running it on the
+      // merged config would falsely block agents from partial patches (e.g.
+      // sessionKeyStrategy) merely because their existing row already carries an
+      // instructions-bundle key. Carrying those keys forward is a preservation,
+      // not a mutation.
       patchData.runtimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
         existing.companyId,
         requestedAdapterType,
-        requestedRuntimeConfig,
+        effectiveRuntimeConfig,
         baseAdapterConfig,
       );
     }
