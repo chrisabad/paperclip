@@ -2277,10 +2277,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     await heartbeat.reconcileStrandedAssignedIssues();
 
-    const livenessWake = await waitForValue(async () => {
-      const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
-      return rows.find((row) => row.reason === "run_liveness_continuation") ?? null;
-    });
+    const livenessWake = await waitForValue(
+      async () => {
+        const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
+        return rows.find((row) => row.reason === "run_liveness_continuation") ?? null;
+      },
+      // CI-safe ceiling: under parallel-shard load the liveness-continuation
+      // enqueue can occasionally exceed the 3s default poll window, making the
+      // assertion flaky ("expected null to be truthy") and failing the Release
+      // verify_canary job. Give it a generous window so publish_stable proceeds.
+      15_000,
+    );
     expect(livenessWake).toBeTruthy();
     expect(livenessWake?.payload).toMatchObject({
       issueId,
@@ -2300,7 +2307,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     expect(sourceRun?.id).not.toBe(runId);
     expect(sourceRun?.livenessState).toBe("plan_only");
-  });
+    // CI-safe ceiling: this test boots embedded Postgres, reconciles stranded
+    // work, then polls for the liveness-continuation enqueue. Under parallel
+    // shard load it can exceed the 5s vitest default (observed 5.4s locally),
+    // which kills the whole test as "timed out in 5000ms" and fails the
+    // Release verify_canary job. Give it a generous per-test window so
+    // publish_stable proceeds.
+  }, 20_000);
 
   it("treats a plan document update as progress and does not enqueue liveness continuation", async () => {
     const { agentId, companyId, issueId, runId } = await seedStrandedIssueFixture({
