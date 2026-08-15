@@ -299,6 +299,14 @@ describe("shouldResetTaskSessionForWake", () => {
     expect(shouldResetTaskSessionForWake({ wakeReason: "execution_changes_requested" })).toBe(true);
   });
 
+  it("resets session context on assignment-recovery wakes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_assignment_recovery" })).toBe(true);
+  });
+
+  it("resets session context on continuation-needed recovery wakes", () => {
+    expect(shouldResetTaskSessionForWake({ wakeReason: "issue_continuation_needed" })).toBe(true);
+  });
+
   it("preserves session context on timer heartbeats", () => {
     expect(shouldResetTaskSessionForWake({ wakeSource: "timer" })).toBe(false);
   });
