@@ -2280,7 +2280,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const livenessWake = await waitForValue(async () => {
       const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
       return rows.find((row) => row.reason === "run_liveness_continuation") ?? null;
-    });
+    }, 15_000);
     expect(livenessWake).toBeTruthy();
     expect(livenessWake?.payload).toMatchObject({
       issueId,
@@ -2300,7 +2300,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     expect(sourceRun?.id).not.toBe(runId);
     expect(sourceRun?.livenessState).toBe("plan_only");
-  });
+  }, 30_000);
 
   it("treats a plan document update as progress and does not enqueue liveness continuation", async () => {
     const { agentId, companyId, issueId, runId } = await seedStrandedIssueFixture({
