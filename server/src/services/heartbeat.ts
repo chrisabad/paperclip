@@ -183,7 +183,12 @@ const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MIN = 1;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_MAX = 50;
-const HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS = 100;
+const HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS_DEFAULT = 100;
+const HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS_MIN = 1;
+const HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS_MAX = 500;
+const HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS = normalizeGlobalMaxConcurrentRuns(
+  process.env.PAPERCLIP_GLOBAL_MAX_CONCURRENT_RUNS,
+);
 const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
@@ -924,6 +929,12 @@ function normalizeMaxConcurrentRuns(value: unknown) {
   const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
   if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_MIN, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
+}
+
+function normalizeGlobalMaxConcurrentRuns(value: unknown) {
+  const parsed = Math.floor(asNumber(value, HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS_DEFAULT));
+  if (!Number.isFinite(parsed)) return HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS_DEFAULT;
+  return Math.max(HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS_MIN, Math.min(HEARTBEAT_GLOBAL_MAX_CONCURRENT_RUNS_MAX, parsed));
 }
 
 interface WakeupOptions {
@@ -5610,8 +5621,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return null;
     }
 
+    const policy = parseHeartbeatPolicy(agent);
     const runningCount = await countRunningRunsForAgent(run.agentId);
-    if (runningCount >= HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT) {
+    if (runningCount >= policy.maxConcurrentRuns) {
       return null;
     }
 
