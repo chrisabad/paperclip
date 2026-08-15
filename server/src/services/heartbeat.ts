@@ -1559,7 +1559,9 @@ export function shouldResetTaskSessionForWake(
     wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
-    wakeReason === "execution_changes_requested"
+    wakeReason === "execution_changes_requested" ||
+    wakeReason === "issue_assignment_recovery" ||
+    wakeReason === "issue_continuation_needed"
   ) {
     return true;
   }
@@ -1634,6 +1636,8 @@ function describeSessionResetReason(
   if (wakeReason === "execution_review_requested") return "wake reason is execution_review_requested";
   if (wakeReason === "execution_approval_requested") return "wake reason is execution_approval_requested";
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
+  if (wakeReason === "issue_assignment_recovery") return "wake reason is issue_assignment_recovery";
+  if (wakeReason === "issue_continuation_needed") return "wake reason is issue_continuation_needed";
   return null;
 }
 
@@ -8246,6 +8250,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             source: recoverySource,
             retryOfRunId: run.id,
           }),
+          // Session continuation for recovery wakes is controlled by
+          // shouldResetTaskSessionForWake (wakeReason issue_assignment_recovery
+          // / issue_continuation_needed now reset to a fresh session). The
+          // sessionIdBefore column is an audit field — keep it populated with
+          // the pre-wake session for diagnostics.
           sessionIdBefore: recoverySessionBefore,
           retryOfRunId: run.id,
           updatedAt: now,
