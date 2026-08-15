@@ -1095,6 +1095,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       return { kind: "existing" as const, evaluationIssueId: existing.id };
     }
 
+    if (await isStormGuardActive(input.run.companyId)) {
+      logger.warn({ companyId: input.run.companyId }, "Recovery storm guard active: skipping stale run evaluation creation");
+      return { kind: "skipped" as const };
+    }
+
     const ownerAgentId = await resolveStaleRunOwnerAgentId({ run: input.run, runningAgent, sourceIssue });
     const description = buildStaleRunEvaluationDescription({
       run: input.run,
@@ -1496,6 +1501,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const existing = await findOpenStrandedIssueRecoveryIssue(input.issue.companyId, input.issue.id);
     if (existing) return existing;
 
+    if (await isStormGuardActive(input.issue.companyId)) {
+      logger.warn({ companyId: input.issue.companyId }, "Recovery storm guard active: skipping stranded issue recovery creation");
+      return null;
+    }
+
     const ownerAgentId = await resolveStrandedIssueRecoveryOwnerAgentId(input.issue);
     if (!ownerAgentId) return null;
 
@@ -1842,6 +1852,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (await isStormGuardActive(issue.companyId)) {
+        logger.warn({ companyId: issue.companyId }, "Recovery storm guard active: skipping stranded issue recovery");
         result.skipped += 1;
         continue;
       }
@@ -2639,6 +2655,37 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  async function isStormGuardActive(companyId: string) {
+    const windowStart = new Date(Date.now() - 1 * 60 * 60 * 1000);
+
+    const createdCount = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        inArray(issues.originKind, [...RECOVERY_ACTION_ORIGIN_KINDS]),
+        gt(issues.createdAt, windowStart),
+      ))
+      .then((rows) => Number(rows[0]?.count ?? 0));
+
+    const resolvedCount = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        inArray(issues.originKind, [...RECOVERY_ACTION_ORIGIN_KINDS]),
+        inArray(issues.status, ["done", "cancelled"]),
+        gt(issues.updatedAt, windowStart),
+      ))
+      .then((rows) => Number(rows[0]?.count ?? 0));
+
+    const isStorming = createdCount > 5 && createdCount > resolvedCount * 2;
+    if (isStorming) {
+      logger.warn({ companyId, createdCount, resolvedCount }, "Recovery storm guard active: high creation rate relative to resolution");
+    }
+    return isStorming;
+  }
+
   async function createIssueGraphLivenessEscalation(input: {
     finding: IssueLivenessFinding;
     runId?: string | null;
@@ -2650,6 +2697,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => rows[0] ?? null);
     if (!issue || issue.companyId !== input.finding.companyId) return { kind: "skipped" as const };
     if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+      return { kind: "skipped" as const };
+    }
+    if (await isStormGuardActive(issue.companyId)) {
+      logger.warn({ companyId: issue.companyId }, "Recovery storm guard active: skipping escalation creation");
       return { kind: "skipped" as const };
     }
 
