@@ -2827,4 +2827,54 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
   });
+
+  it("marks an exit-0 run with explicitly all-zero usage as failed with no_model_activity", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "No-op run.",
+      provider: "test",
+      model: "test-model",
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+      },
+      costUsd: 0,
+    });
+
+    const { runId } = await seedQueuedIssueRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    const finished = await waitForRunToSettle(heartbeat, runId, 5_000);
+
+    expect(finished?.status).toBe("failed");
+    expect(finished?.errorCode).toBe("no_model_activity");
+    expect(finished?.error).toBe("Run completed with no model activity");
+  });
+
+  it("still records a run as succeeded when usage is absent or null", async () => {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Completed work with no reported usage.",
+      provider: "test",
+      model: "test-model",
+    });
+
+    const { runId } = await seedQueuedIssueRunFixture();
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    const finished = await waitForRunToSettle(heartbeat, runId, 5_000);
+
+    expect(finished?.status).toBe("succeeded");
+    expect(finished?.errorCode).toBeNull();
+    expect(finished?.error).toBeNull();
+  });
 });
