@@ -3854,6 +3854,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(eq(agents.id, run.agentId))
         .then((rows) => rows[0] ?? null),
     ]);
++// Ensure the issue executionRunId is set before proceeding; retry a few times
++if (issue && !issue.executionRunId) {
++  let attempts = 0;
++  while (attempts < 5 && !issue.executionRunId) {
++    await new Promise((r) => setTimeout(r, 250));
++    const refreshed = await db
++      .select({ executionRunId: issues.executionRunId })
++      .from(issues)
++      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
++      .then((rows) => rows[0] ?? null);
++    if (refreshed?.executionRunId) issue.executionRunId = refreshed.executionRunId;
++    attempts++;
++  }
++}
 
     const budgetBlock =
       issue && agent
