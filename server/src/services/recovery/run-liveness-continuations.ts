@@ -106,7 +106,15 @@ export function decideRunLivenessContinuation(input: {
   const maxAttempts = input.maxAttempts ?? DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS;
 
   if (!livenessState || !ACTIONABLE_LIVENESS_STATES.has(livenessState)) {
-    return { kind: "skip", reason: "liveness state is not actionable for continuation" };
+    // Derive livenessState for failed runs - assume plan_only if run has error
+    if (livenessState == null && run.continuationAttempt === undefined) {
+      // If run has errorCode or error, treat as plan_only
+      // We'll set to plan_only to trigger continuation
+      livenessState = "plan_only" as RunLivenessState;
+    }
+    if (!ACTIONABLE_LIVENESS_STATES.has(livenessState)) {
+      return { kind: "skip", reason: "liveness state is not actionable for continuation" };
+    }
   }
   if (!issue) return { kind: "skip", reason: "issue not found" };
   if (!agent) return { kind: "skip", reason: "agent not found" };
